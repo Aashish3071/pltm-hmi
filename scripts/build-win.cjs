@@ -59,12 +59,24 @@ async function main() {
     env.ELECTRON_BUILDER_NSIS_DIR = await nativeNsisDir()
     console.log(`Using native NSIS (${env.ELECTRON_BUILDER_NSIS_DIR})`)
   }
-  const result = spawnSync('npx', ['electron-builder', '--win', '--x64'], {
-    cwd: root,
-    env,
-    stdio: 'inherit'
-  })
-  process.exit(result.status ?? 1)
+  // Run the CLIs through node directly: no shell, so this works the same on
+  // Windows (cmd.exe) and macOS.
+  const builder = spawnSync(
+    process.execPath,
+    [require.resolve('electron-builder/cli.js'), '--win', '--x64', '--publish', 'never'],
+    { cwd: root, env, stdio: 'inherit' }
+  )
+
+  // Packaging swapped better-sqlite3 for the Windows binary; on a non-Windows
+  // machine put the local one back so `npm run dev` and the tests keep working.
+  if (process.platform !== 'win32') {
+    spawnSync(
+      process.execPath,
+      [require.resolve('@electron/rebuild/lib/cli.js'), '-f', '-o', 'better-sqlite3'],
+      { cwd: root, stdio: 'inherit' }
+    )
+  }
+  process.exit(builder.status ?? 1)
 }
 
 main().catch((error) => {

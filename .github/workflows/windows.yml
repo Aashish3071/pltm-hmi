@@ -1,0 +1,76 @@
+# Tests PLTM HMI on Windows and builds the installer there.
+# Every push/PR: run the test suites on windows-latest.
+# A tag like v1.0.1: also build PLTM HMI-Setup-<version>.exe and publish it
+# as a GitHub Release (only if the Windows tests pass).
+name: Windows
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test on Windows
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - name: Simulator and database checks
+        run: npm run smoke
+      - name: Modbus driver against a simulated PLC (RTU over TCP, Modbus TCP)
+        run: npm run test:modbus
+      - name: End-to-end UI test of the built app
+        run: npm run test:e2e
+      - name: Keep UI screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-screenshots
+          path: scripts/out/e2e
+          if-no-files-found: ignore
+
+  installer:
+    name: Build Windows installer
+    needs: test
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run dist:win
+      - name: Keep the installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: PLTM-HMI-installer
+          path: dist/*.exe
+          if-no-files-found: error
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.exe
+          body: |
+            **Download `PLTM-HMI-Setup-*.exe` below and run it on the Windows PC.**
+
+            - Windows 10 or 11, 64-bit. No other software needed.
+            - The installer is not code-signed: if Windows shows "Windows protected your PC", click **More info → Run anyway**.
+            - First login: `ADMIN` / `admin` — change all passwords in Settings straight away.
+            - Built and tested on Windows by GitHub Actions for this release.

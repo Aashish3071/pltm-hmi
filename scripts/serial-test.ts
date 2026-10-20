@@ -6,7 +6,7 @@
  * Run with: npm run test:serial
  */
 import { app } from 'electron'
-import { spawn, type ChildProcess } from 'child_process'
+import { spawn, spawnSync, type ChildProcess } from 'child_process'
 import { existsSync, mkdirSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -222,9 +222,15 @@ async function main(): Promise<void> {
   app.exit(failures === 0 ? 0 : 1)
 }
 
-app.whenReady().then(() =>
-  main().catch((error) => {
+app.whenReady().then(() => {
+  // Virtual COM-port pairs come from socat, which exists on macOS/Linux only.
+  if (spawnSync('socat', ['-V']).error) {
+    console.log('\nSKIPPED serial test: socat is not installed (macOS: brew install socat).\n')
+    app.exit(0)
+    return
+  }
+  return main().catch((error) => {
     console.error(error)
     app.exit(1)
   })
-)
+})
