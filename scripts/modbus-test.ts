@@ -225,6 +225,14 @@ async function main(): Promise<void> {
   await plc.listenTcp(TCP_PORT)
   check('supervisor reconnects automatically', await waitFor(() => hardware.getSnapshot().connected, 8000))
 
+  console.log('\nGateway connection reset (RST)')
+  await resetMachine()
+  check('connected before reset', await waitFor(() => hardware.getSnapshot().connected, 5000))
+  const resetAt = Date.now()
+  plc.resetConnections()
+  check('hard reset detected within 3 s', await waitFor(() => !hardware.getSnapshot().connected, 3000), `(${Date.now() - resetAt} ms)`)
+  check('reconnects after a hard reset', await waitFor(() => hardware.getSnapshot().connected, 8000))
+
   console.log('\nModbus TCP transport')
   await resetMachine()
   await setHardwareConfig({

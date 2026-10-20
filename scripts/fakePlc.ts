@@ -171,25 +171,34 @@ export class FakePlc {
 
   /** Serves Modbus RTU frames over TCP. */
   listenRtuOverTcp(port: number): Promise<void> {
-    return this.listen(port, (socket) => {
-      let buffer = Buffer.alloc(0)
-      socket.on('data', (chunk) => {
-        buffer = Buffer.concat([buffer, chunk])
-        for (;;) {
-          const length = rtuRequestLength(buffer)
-          if (length === 0 || buffer.length < length) break
-          const frame = buffer.subarray(0, length)
-          buffer = buffer.subarray(length)
-          const crc = crc16(frame.subarray(0, length - 2))
-          if (frame.readUInt16LE(length - 2) !== crc) continue // corrupt frame: no reply
-          if (frame[0] !== this.unitId) continue
-          const response = Buffer.concat([Buffer.from([this.unitId]), this.handlePdu(frame.subarray(1, length - 2))])
-          const out = Buffer.alloc(response.length + 2)
-          response.copy(out)
-          out.writeUInt16LE(crc16(response), response.length)
-          socket.write(out)
-        }
-      })
+    return this.listen(port, (socket) => this.serveRtu(socket))
+  }
+
+  /**
+   * Answers Modbus RTU frames on any byte stream: a TCP socket (transparent
+   * gateway) or a serial port (RS-485 adapter).
+   */
+  serveRtu(stream: {
+    on(event: 'data', listener: (chunk: Buffer) => void): unknown
+    write(data: Buffer): unknown
+  }): void {
+    let buffer = Buffer.alloc(0)
+    stream.on('data', (chunk) => {
+      buffer = Buffer.concat([buffer, chunk])
+      for (;;) {
+        const length = rtuRequestLength(buffer)
+        if (length === 0 || buffer.length < length) break
+        const frame = buffer.subarray(0, length)
+        buffer = buffer.subarray(length)
+        const crc = crc16(frame.subarray(0, length - 2))
+        if (frame.readUInt16LE(length - 2) !== crc) continue // corrupt frame: no reply
+        if (frame[0] !== this.unitId) continue
+        const response = Buffer.concat([Buffer.from([this.unitId]), this.handlePdu(frame.subarray(1, length - 2))])
+        const out = Buffer.alloc(response.length + 2)
+        response.copy(out)
+        out.writeUInt16LE(crc16(response), response.length)
+        stream.write(out)
+      }
     })
   }
 
@@ -230,6 +239,11 @@ export class FakePlc {
       server.listen(port, '127.0.0.1', () => resolve())
       this.servers.push(server)
     })
+  }
+
+  /** Hard-resets every connection (TCP RST) — a gateway reboot or yanked cable. */
+  resetConnections(): void {
+    for (const socket of this.sockets) socket.resetAndDestroy()
   }
 
   /** Drops every connection and stops listening — simulates a pulled cable. */

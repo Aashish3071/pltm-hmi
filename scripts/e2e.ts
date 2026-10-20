@@ -58,10 +58,14 @@ async function main(): Promise<void> {
     mkdirSync(dir, { recursive: true })
   }
 
-  const app = await electron.launch({
-    args: [join(root, 'out', 'main', 'index.js'), `--user-data-dir=${profile}`],
-    cwd: root
-  })
+  // E2E_EXECUTABLE runs the suite against a packaged app instead of the build output.
+  const packaged = process.env.E2E_EXECUTABLE
+  const app = await electron.launch(
+    packaged
+      ? { executablePath: packaged, args: [`--user-data-dir=${profile}`] }
+      : { args: [join(root, 'out', 'main', 'index.js'), `--user-data-dir=${profile}`], cwd: root }
+  )
+  if (packaged) console.log(`Testing packaged app: ${packaged}`)
   // Keep test reports out of the real Documents folder.
   await app.evaluate(({ app: electronApp }, dir) => electronApp.setPath('documents', dir), documents)
 
@@ -129,6 +133,11 @@ async function main(): Promise<void> {
   await page.locator('.register-map').waitFor()
   check('connection tab shows the register map', (await page.locator('.register-map').inputValue()).includes('statusCodes'))
   await shot(page, '07-settings-connection')
+  const ports = await page.evaluate(async () =>
+    (window as unknown as { pltm: { hardware: { listPorts: () => Promise<{ ok: boolean; message?: string }> } } })
+      .pltm.hardware.listPorts()
+  )
+  check('serial port driver loads (COM port list)', ports.ok, JSON.stringify(ports))
   await page.getByRole('button', { name: 'TEST CONNECTION' }).click()
   const started = Date.now()
   check('test connection fails clearly with no machine', await toastAppears(page, '192.168.0.1:4840', 15000))

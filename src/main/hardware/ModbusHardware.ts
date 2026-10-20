@@ -84,6 +84,16 @@ export class ModbusHardware extends EventEmitter implements HardwareInterface {
     if (this.connected) return
     const client = new ModbusRTU()
     const c = this.connection
+    // The client re-emits port failures (USB adapter pulled, gateway socket
+    // reset) as 'error' events; unhandled, Node treats them as fatal. Treat
+    // both error and close as an immediate link loss.
+    const onPortLost = (reason: string): void => {
+      if (this.client === client && this.connected) this.dropLink(reason)
+    }
+    ;(client as unknown as EventEmitter).on('error', (error: unknown) =>
+      onPortLost(`port error: ${messageOf(error)}`)
+    )
+    ;(client as unknown as EventEmitter).on('close', () => onPortLost('port closed'))
     try {
       await withTimeout(this.openTransport(client), connectTimeoutMs(c), 'Connection timed out')
       client.setID(c.unitId)
@@ -251,7 +261,10 @@ export class ModbusHardware extends EventEmitter implements HardwareInterface {
         await this.pollOnce()
         this.pollFailures = 0
       } catch (error) {
+        // A poll still in flight when the link dropped is not a new failure.
+        if (!this.connected) return
         this.pollFailures++
+        log.warn(`Poll failed (${this.pollFailures}/${MAX_POLL_FAILURES}): ${messageOf(error)}`)
         if (this.pollFailures >= MAX_POLL_FAILURES) {
           this.dropLink(messageOf(error))
           return
