@@ -1,0 +1,35 @@
+appId: com.novatek.pltm
+productName: PLTM HMI
+directories:
+  buildResources: resources
+  output: dist
+files:
+  - out/**/*
+  - package.json
+asarUnpack:
+  - '**/*.node'
+# Dependencies are packaged but not rebuilt by electron-builder; see scripts/before-pack.cjs.
+npmRebuild: false
+beforePack: scripts/before-pack.cjs
+afterPack: scripts/after-pack.cjs
+win:
+  icon: resources/icon.ico
+  # Icon/version stamping is done by scripts/after-pack.cjs (no Wine needed).
+  signAndEditExecutable: false
+  target:
+    - target: nsis
+      arch:
+        - x64
+  artifactName: ${productName}-Setup-${version}.${ext}
+nsis:
+  oneClick: false
+  installerLanguages:
+    - en_US
+  multiLanguageInstaller: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  shortcutName: PLTM HMI
+mac:
+  target: dmg
+  category: public.app-category.utilities

@@ -1,0 +1,55 @@
+{
+  "name": "pltm-hmi",
+  "version": "1.0.0",
+  "description": "Pantograph Load Testing Machine — HMI application",
+  "main": "./out/main/index.js",
+  "author": "Novatek",
+  "private": true,
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "npm run typecheck && electron-vite build",
+    "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
+    "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
+    "typecheck": "npm run typecheck:node && npm run typecheck:web",
+    "smoke": "esbuild scripts/smoke.ts --bundle --platform=node --format=cjs --outfile=scripts/out/smoke.cjs --external:electron --external:better-sqlite3 --external:exceljs --external:serialport --external:modbus-serial --alias:@shared=./src/shared && electron scripts/out/smoke.cjs",
+    "test:modbus": "esbuild scripts/modbus-test.ts --bundle --platform=node --format=cjs --outfile=scripts/out/modbus-test.cjs --external:electron --external:better-sqlite3 --external:exceljs --external:serialport --external:modbus-serial --alias:@shared=./src/shared && electron scripts/out/modbus-test.cjs",
+    "test:e2e": "electron-vite build && esbuild scripts/e2e.ts --bundle --platform=node --format=cjs --outfile=scripts/out/e2e.cjs --external:playwright-core && node scripts/out/e2e.cjs",
+    "test": "npm run typecheck && npm run smoke && npm run test:modbus && npm run test:e2e",
+    "icon": "esbuild scripts/make-icon.ts --bundle --platform=node --format=cjs --outfile=scripts/out/make-icon.cjs --external:electron && electron scripts/out/make-icon.cjs",
+    "postinstall": "electron-rebuild -f -o better-sqlite3",
+    "dist:win": "npm run build && node scripts/build-win.cjs; status=$?; electron-rebuild -f -o better-sqlite3; exit $status",
+    "dist:mac": "npm run build && electron-builder --mac"
+  },
+  "dependencies": {
+    "@electron-toolkit/preload": "^3.0.1",
+    "@electron-toolkit/utils": "^3.0.0",
+    "bcryptjs": "^2.4.3",
+    "better-sqlite3": "^12.2.0",
+    "exceljs": "^4.4.0",
+    "modbus-serial": "^8.0.25",
+    "serialport": "^13.0.0"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.17",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
+    "electron-vite": "^2.3.0",
+    "playwright-core": "^1.64.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "resedit": "^2.0.3",
+    "typescript": "^5.7.2",
+    "vite": "^5.4.11",
+    "zustand": "^5.0.2"
+  },
+  "allowScripts": {
+    "electron@33.4.11": true,
+    "better-sqlite3@12.11.1": true,
+    "esbuild@0.21.5": true
+  }
+}
