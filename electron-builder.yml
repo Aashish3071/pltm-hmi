@@ -26,6 +26,8 @@ nsis:
   installerLanguages:
     - en_US
   multiLanguageInstaller: false
+  # No auto-updater, so no update-diff (.blockmap) file next to the installer.
+  differentialPackage: false
   perMachine: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
