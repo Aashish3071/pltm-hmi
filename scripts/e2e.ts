@@ -3,7 +3,7 @@
  * an isolated profile, and saves screenshots of each screen.
  * Run with: npm run test:e2e   (screenshots land in scripts/out/e2e/)
  */
-import { existsSync, mkdirSync, readdirSync, rmSync } from 'fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join, resolve } from 'path'
 import { _electron as electron, type Page } from 'playwright-core'
@@ -142,8 +142,53 @@ async function main(): Promise<void> {
   const started = Date.now()
   check('test connection fails clearly with no machine', await toastAppears(page, '192.168.0.1:4840', 15000))
   check('connection test gives up within seconds', Date.now() - started < 8000, `(${Date.now() - started} ms)`)
+
+  console.log('\nCOM port selection')
+  await page.locator('.connection-panel .field-row', { hasText: 'PROTOCOL' }).locator('select').selectOption('rtu-serial')
+  const comSelect = page.getByLabel('COM port')
+  await comSelect.waitFor()
+  const comOptions = await comSelect.locator('option').allTextContents()
+  check('COM port is a dropdown of detected ports', comOptions.length >= 2, JSON.stringify(comOptions))
+  check('dropdown offers manual entry', comOptions.some((o) => o.startsWith('Other')))
+  const detected = (ports as { ok: boolean; data?: { path: string }[] }).data ?? []
+  if (detected.length > 0) {
+    await comSelect.selectOption(detected[0].path)
+    check('a detected port can be selected', (await comSelect.inputValue()) === detected[0].path)
+  }
+  await comSelect.selectOption('__manual__')
+  check('choosing Other shows a port-name box', await page.getByPlaceholder('e.g. COM7').isVisible())
+  await shot(page, '07b-settings-com-port')
+
+  console.log('\nCalibration')
+  await page.getByRole('button', { name: 'CALIBRATION' }).click()
+  await page.locator('.calibration-grid').waitFor()
+  await shot(page, '07c-calibration-empty')
+  await page.getByLabel('Reference load 2').fill('5')
+  await page.getByLabel('Reference load 3').fill('10')
+  const captureButtons = page.locator('.cal-table').first().getByRole('button', { name: 'CAPTURE' })
+  for (let i = 0; i < 3; i++) {
+    await captureButtons.nth(i).click()
+    await page.waitForFunction(() => !document.body.innerText.includes('READING…'), undefined, { timeout: 10000 })
+  }
+  check('live fit preview passes', (await page.locator('.fit-pass').first().textContent())?.includes('PASS') ?? false)
+  await page.getByRole('button', { name: 'SAVE CALIBRATION' }).click()
+  check('calibration saved and applied', await toastAppears(page, 'Calibration saved and applied'))
+  check('history lists the calibration', await page.locator('.cal-table td.fit-pass', { hasText: 'PASS' }).first().isVisible())
+  await page.getByLabel('CALIBRATION LAB').fill('Example Calibration Lab')
+  await page.getByLabel('LAB ACCREDITATION NO.').fill('CC-1234')
+  await page.getByLabel('CERTIFICATE NO.').fill('LC-2026-001')
+  await page.getByLabel('LOAD-CELL SERIAL NO.').fill('LC-998')
+  await page.getByLabel('CALIBRATED ON').fill('2026-10-01')
+  await page.getByLabel('VALID UNTIL').fill('2027-09-30')
+  await page.getByLabel('UNCERTAINTY').fill('0.1 %')
+  await page.getByRole('button', { name: 'SAVE CERTIFICATE' }).click()
+  check('accredited certificate recorded', await toastAppears(page, 'Load-cell certificate recorded'))
+  check('status shows calibration valid', (await page.locator('.state-badge.ok').count()) >= 2)
+  await shot(page, '07d-calibration-done')
+
   await page.locator('.settings-footer').getByRole('button', { name: 'HOME' }).click()
   await page.locator('.home').waitFor()
+  check('safety strip shown on home', (await page.locator('.safety-strip').textContent())?.includes('E-STOP') ?? false)
 
   console.log('\nTest run')
   await page.getByRole('button', { name: 'START' }).isDisabled()
@@ -179,10 +224,12 @@ async function main(): Promise<void> {
 
   console.log('\nReport')
   await page.getByRole('button', { name: 'REPORT' }).click()
-  check('report saved toast with OPEN FOLDER', await toastAppears(page, 'Report saved', 10000) && (await page.locator('.toast-action').isVisible()))
+  check('report saved toast with OPEN FOLDER', await toastAppears(page, 'Report and certificate', 15000) && (await page.locator('.toast-action').isVisible()))
   const reportFolder = join(documents, 'PLTM Reports')
   const reports = existsSync(reportFolder) ? readdirSync(reportFolder) : []
   check('xlsx written for the model and part', reports.some((f) => f.startsWith('PANTO_3.8_E2E-0001') && f.endsWith('.xlsx')), `(${reports.join(', ')})`)
+  const pdfName = reports.find((f) => f.startsWith('PANTO_3.8_E2E-0001') && f.endsWith('_certificate.pdf'))
+  check('PDF certificate written alongside', !!pdfName && readFileSync(join(reportFolder, pdfName)).subarray(0, 5).toString() === '%PDF-', `(${reports.join(', ')})`)
   await shot(page, '10-report')
 
   console.log('\nManual jog')

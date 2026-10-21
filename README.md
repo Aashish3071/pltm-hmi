@@ -29,10 +29,11 @@ Each release is built and tested on Windows by GitHub Actions ([workflow](.githu
 - **Live test screen**: load (N) vs height (mm) graph over the model's profile, status bar, live readings, up/down cycle timers.
 - **Operating buttons** as in the original HMI: START, STOP / RESUME, RESET, HOMING, REPORT, SETTINGS, LOGOUT, CLOSE.
 - **Models**: create, edit and delete test profiles of 9 load/height points; row 4's height is the travel distance.
-- **Excel reports**: one `.xlsx` per test with the run details, model profile, every recorded reading and the graph.
-- **Machine connection** over Modbus RTU through a USB-to-RS485 adapter (COM port) or an Ethernet gateway (RTU over TCP, or Modbus TCP). Addresses come from an editable register map, so commissioning needs no code changes.
+- **Reports and test certificates**: REPORT saves an Excel workbook and a numbered PDF test certificate per test: raising force Fr, lowering force Fl, mean static contact force (Fr + Fl) / 2 and hysteresis Fl − Fr by height, the force/height graph, the calibration in force on the test date, signature blocks, and a SHA-256 fingerprint of the stored record.
+- **Load-cell calibration**: multi-point calibration with reference weights (least-squares fit, live error preview, pass/fail against a maximum permissible error), the accredited (NABL / ISO 17025) load-cell certificate with its scanned file, due-date tracking, and an optional policy that blocks tests when either is overdue. Every test records which calibration and certificate it ran under.
+- **Machine connection** over Modbus RTU through a USB-to-RS485 adapter (COM port picked from a list of detected ports) or an Ethernet gateway (RTU over TCP, or Modbus TCP). Addresses come from an editable register map, so commissioning needs no code changes.
 - **Simulator** built in, for training and for running without the machine.
-- **Safety**: software overload trip, HOMING and START guard rails, hold-to-run jog that stops within 0.6 s if the hold is lost, automatic reconnection, and tests cut short by a disconnect or power loss are recorded as such.
+- **Safety**: E-stop, overload trip, travel limits and a communication watchdog run in the PLC ([requirements](docs/plc-safety-requirements.md)); the app reads their signals, shows them on the Home screen, sends the PLC its overload and travel limits, and feeds the watchdog. On top of that: a backup software overload trip, HOMING and START guard rails, hold-to-run jog that stops within 0.6 s if the hold is lost, automatic reconnection, and tests cut short by a disconnect or power loss are recorded as such.
 
 | Login | Settings |
 | --- | --- |

@@ -13,6 +13,7 @@ import { CommandError } from '../errors'
 import { log } from '../logger'
 import {
   ConfigError,
+  missingSafetySignals,
   validateConnection,
   validateDriver,
   validateRegisterMap
@@ -151,12 +152,20 @@ export function getMachineSettings(): MachineSettings {
   return {
     machineId: s.machine_id ?? '',
     loadCapacityN: Number(s.load_capacity_n ?? 250),
-    heightCapacityMm: Number(s.height_capacity_mm ?? 4000)
+    heightCapacityMm: Number(s.height_capacity_mm ?? 4000),
+    companyName: s.company_name ?? '',
+    companyAddress: s.company_address ?? ''
   }
 }
 
-export function setMachineSettings(input: MachineSettings): MachineSettings {
+export async function setMachineSettings(input: MachineSettings): Promise<MachineSettings> {
   const machineId = String(input.machineId ?? '').trim()
+  const companyName = String(input.companyName ?? '').trim()
+  const companyAddress = String(input.companyAddress ?? '').trim()
+  if (!companyName || companyName.length > 80) {
+    throw invalid('Company name is required (max 80 characters); it is printed on certificates.')
+  }
+  if (companyAddress.length > 200) throw invalid('Company address must be at most 200 characters.')
   const loadCapacityN = Number(input.loadCapacityN)
   const heightCapacityMm = Number(input.heightCapacityMm)
   if (!machineId || machineId.length > NAME_MAX) {
@@ -175,9 +184,12 @@ export function setMachineSettings(input: MachineSettings): MachineSettings {
   settingsRepo.set('machine_id', machineId)
   settingsRepo.set('load_capacity_n', String(loadCapacityN))
   settingsRepo.set('height_capacity_mm', String(heightCapacityMm))
+  settingsRepo.set('company_name', companyName)
+  settingsRepo.set('company_address', companyAddress)
   const hardware = getHardware()
-  hardware.setLoadCapacity(loadCapacityN)
-  hardware.setHeightCapacity(heightCapacityMm)
+  // On the real machine these become the PLC's own overload and travel limits.
+  await hardware.setLoadCapacity(loadCapacityN)
+  await hardware.setHeightCapacity(heightCapacityMm)
   return getMachineSettings()
 }
 
@@ -217,6 +229,8 @@ export async function setHardwareConfig(input: unknown): Promise<HardwareConfig>
   settingsRepo.set('modbus_connection', JSON.stringify(config.connection))
   settingsRepo.set('modbus_register_map', JSON.stringify(config.registerMap, null, 2))
   log.info(`Hardware driver set to ${config.driver}`)
+  const missing = config.driver === 'modbus' ? missingSafetySignals(config.registerMap) : []
+  if (missing.length) log.warn(`Register map does not connect: ${missing.join('; ')}`)
   await getHardware().setDriver(buildDriver(config), config.driver)
   return config
 }

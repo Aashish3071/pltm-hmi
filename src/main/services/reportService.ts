@@ -2,10 +2,18 @@ import { join } from 'path'
 import { mkdirSync } from 'fs'
 import { app } from 'electron'
 import ExcelJS from 'exceljs'
-import { ErrorCode, type ModelPoint, type TestRunSummary } from '@shared/types'
-import { modelsRepo, settingsRepo, testRunsRepo } from '../db/repositories'
+import { ErrorCode, type ModelPoint, type ReportResult, type TestRunSummary } from '@shared/types'
+import {
+  calibrationsRepo,
+  loadCellCertificatesRepo,
+  modelsRepo,
+  settingsRepo,
+  testRunsRepo
+} from '../db/repositories'
 import { CommandError } from '../errors'
 import { log } from '../logger'
+import { nextCertificateNo, writeCertificatePdf } from './certificateService'
+import { analyseRun, type RunAnalysis } from './testAnalysis'
 
 export function reportDir(): string {
   const configured = settingsRepo.get('report_output_dir')
@@ -44,7 +52,11 @@ export function runChartData(runId: number): RunChartData {
  * exceljs cannot author native charts, so the renderer draws the run's graph
  * and hands over a PNG, embedded alongside the raw data.
  */
-export async function generateReport(runId: number, chartPngDataUrl?: string): Promise<string> {
+export async function generateReport(
+  runId: number,
+  chartPngDataUrl?: string,
+  extras?: { certificateNo: string; analysis: RunAnalysis; baseName: string }
+): Promise<string> {
   const run = testRunsRepo.get(runId)
   if (!run) throw new CommandError(ErrorCode.NO_COMPLETED_RUN)
   const points = testRunsRepo.points(runId)
@@ -71,12 +83,19 @@ export async function generateReport(runId: number, chartPngDataUrl?: string): P
     ['Employee', run.employeeName ?? '-'],
     ['Model', run.modelName ?? '-'],
     ['Part No', run.partNo ?? '-'],
+    ...(extras ? ([['Certificate No', extras.certificateNo]] as [string, string][]) : []),
     ['Started', run.startedAt],
     ['Ended', run.endedAt ?? '-'],
     ['Up Cycle (s)', run.upCycleSec ?? 0],
     ['Down Cycle (s)', run.downCycleSec ?? 0],
     ['Max Load (N)', run.maxLoadN ?? 0],
-    ['Result', run.resultStatus ?? '-']
+    ['Result', run.resultStatus ?? '-'],
+    ...(extras
+      ? ([
+          ['Mean Static Force (N)', extras.analysis.meanStaticN ?? '-'],
+          ['Max Hysteresis Fl-Fr (N)', extras.analysis.maxHysteresisN ?? '-']
+        ] as [string, string | number][])
+      : [])
   ]
   header.forEach(([label, value], i) => {
     const row = sheet.getRow(3 + i)
@@ -128,7 +147,7 @@ export async function generateReport(runId: number, chartPngDataUrl?: string): P
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
   const filePath = join(
     dir,
-    `${safe(run.modelName ?? 'MODEL')}_${safe(run.partNo ?? 'PART')}_${stamp}.xlsx`
+    `${extras?.baseName ?? `${safe(run.modelName ?? 'MODEL')}_${safe(run.partNo ?? 'PART')}_${stamp}`}.xlsx`
   )
   try {
     mkdirSync(dir, { recursive: true })
@@ -143,6 +162,52 @@ export async function generateReport(runId: number, chartPngDataUrl?: string): P
   testRunsRepo.setReportPath(runId, filePath)
   log.info(`Report saved: ${filePath}`)
   return filePath
+}
+
+/**
+ * The REPORT button: the Excel workbook plus a PDF test certificate, both
+ * carrying the same certificate number and generated from the stored record.
+ */
+export async function generateReportFiles(runId: number, chartPngDataUrl?: string): Promise<ReportResult> {
+  const run = testRunsRepo.get(runId)
+  if (!run) throw new CommandError(ErrorCode.NO_COMPLETED_RUN)
+  const trace = testRunsRepo.traceability(runId)
+  const certificateNo = trace.certificateNo ?? nextCertificateNo()
+  if (!trace.certificateNo) testRunsRepo.setCertificateNo(runId, certificateNo)
+
+  const samples = testRunsRepo.points(runId)
+  const analysis = analyseRun(samples)
+  const modelId = testRunsRepo.modelIdOf(runId)
+  const safe = (value: string): string => value.replace(/[^\w.-]+/g, '_')
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+  const baseName = `${safe(run.modelName ?? 'MODEL')}_${safe(run.partNo ?? 'PART')}_${stamp}`
+
+  const excelPath = await generateReport(runId, chartPngDataUrl, { certificateNo, analysis, baseName })
+  const pdfPath = join(reportDir(), `${baseName}_certificate.pdf`)
+  try {
+    await writeCertificatePdf(
+      {
+        certificateNo,
+        run,
+        model: modelId ? modelsRepo.getIncludingArchived(modelId) : undefined,
+        samples,
+        analysis,
+        calibration: trace.calibrationId ? calibrationsRepo.get(trace.calibrationId) : undefined,
+        loadCellCertificate: trace.loadCellCertificateId
+          ? loadCellCertificatesRepo.get(trace.loadCellCertificateId)
+          : undefined
+      },
+      pdfPath
+    )
+  } catch (error) {
+    log.error(`Certificate write failed: ${pdfPath}`, error)
+    throw new CommandError(
+      ErrorCode.INVALID_INPUT,
+      `The Excel report was saved, but the PDF certificate could not be written to ${reportDir()}.`
+    )
+  }
+  log.info(`Certificate ${certificateNo} saved: ${pdfPath}`)
+  return { excelPath, pdfPath, certificateNo }
 }
 
 function styleHeader(row: ExcelJS.Row, labels: string[]): void {

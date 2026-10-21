@@ -6,11 +6,13 @@ import {
   type HardwareSnapshot,
   type MachineMode,
   type RunPhase,
+  type SafetyState,
   type TelemetryFrame
 } from '@shared/types'
 import { api } from '../api/client'
 
 const MAX_GRAPH_POINTS = 20000
+const SNAPSHOT_REFRESH_MS = 1500
 
 interface GraphPoint {
   loadN: number
@@ -23,6 +25,8 @@ interface MachineState {
   mode: MachineMode
   homed: boolean
   loadN: number
+  /** Before the calibration correction. */
+  loadRawN: number
   heightMm: number
   phase: RunPhase
   upCycleSec: number
@@ -30,6 +34,7 @@ interface MachineState {
   points: GraphPoint[]
   /** Model of the run in progress (or paused), as reported by the machine. */
   activeModelId: number | null
+  safety: SafetyState | null
   applySnapshot: (snapshot: HardwareSnapshot) => void
   applyTelemetry: (frame: TelemetryFrame) => void
   applyStatus: (status: HardwareStatus) => void
@@ -44,12 +49,14 @@ export const useMachineStore = create<MachineState>((set) => ({
   mode: 'AUTO',
   homed: false,
   loadN: 0,
+  loadRawN: 0,
   heightMm: 0,
   phase: 'idle',
   upCycleSec: 0,
   downCycleSec: 0,
   points: [],
   activeModelId: null,
+  safety: null,
 
   applySnapshot: (snapshot) =>
     set({
@@ -58,16 +65,19 @@ export const useMachineStore = create<MachineState>((set) => ({
       mode: snapshot.mode,
       homed: snapshot.homed,
       loadN: snapshot.loadN,
+      loadRawN: snapshot.loadRawN,
       heightMm: snapshot.heightMm,
       phase: snapshot.phase,
       upCycleSec: snapshot.upCycleSec,
       downCycleSec: snapshot.downCycleSec,
-      activeModelId: snapshot.activeModelId
+      activeModelId: snapshot.activeModelId,
+      safety: snapshot.safety
     }),
 
   applyTelemetry: (frame) =>
     set((state) => ({
       loadN: frame.loadN,
+      loadRawN: frame.loadRawN,
       heightMm: frame.heightMm,
       phase: frame.phase,
       mode: frame.mode,
@@ -110,7 +120,12 @@ export function connectMachineEvents(): () => void {
     api.machine.onCycleComplete(store.applyCycle)
   ]
   void refreshSnapshot()
-  return () => offs.forEach((off) => off())
+  // Safety inputs and the watchdog can change without a status change.
+  const timer = window.setInterval(() => void refreshSnapshot(), SNAPSHOT_REFRESH_MS)
+  return () => {
+    window.clearInterval(timer)
+    offs.forEach((off) => off())
+  }
 }
 
 export function isFault(status: HardwareStatus): boolean {

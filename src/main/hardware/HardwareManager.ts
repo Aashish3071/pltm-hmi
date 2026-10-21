@@ -8,7 +8,7 @@ import type {
   ModelConfig,
   SpeedSettings
 } from '@shared/types'
-import { settingsRepo } from '../db/repositories'
+import { calibrationsRepo, settingsRepo } from '../db/repositories'
 import { log } from '../logger'
 import {
   DEFAULT_CONNECTION,
@@ -40,6 +40,7 @@ export class HardwareHub extends EventEmitter implements HardwareInterface {
   private watchdog: NodeJS.Timeout | null = null
   private jogState: { direction: JogDirection; lastPing: number } | null = null
   private lastConnectError = ''
+  private calibration = { gain: 1, offset: 0 }
 
   constructor(driver: HardwareInterface, kind: HardwareDriver) {
     super()
@@ -61,6 +62,7 @@ export class HardwareHub extends EventEmitter implements HardwareInterface {
     this.driver = driver
     this.kind = kind
     this.attach(driver)
+    driver.setLoadCalibration(this.calibration.gain, this.calibration.offset)
     this.emit('connection', { connected: false })
     await this.tryConnect()
   }
@@ -185,12 +187,25 @@ export class HardwareHub extends EventEmitter implements HardwareInterface {
     return this.driver.setSpeeds(speeds)
   }
 
-  setLoadCapacity(loadCapacityN: number): void {
-    this.driver.setLoadCapacity(loadCapacityN)
+  setLoadCapacity(loadCapacityN: number): Promise<void> {
+    return this.driver.setLoadCapacity(loadCapacityN)
   }
 
-  setHeightCapacity(heightCapacityMm: number): void {
-    if (this.driver instanceof MockHardware) this.driver.setHeightCapacity(heightCapacityMm)
+  setHeightCapacity(heightCapacityMm: number): Promise<void> {
+    return this.driver.setHeightCapacity(heightCapacityMm)
+  }
+
+  /** Kept across driver swaps: the calibration belongs to the load cell, not the driver. */
+  setLoadCalibration(gain: number, offset: number): void {
+    this.calibration = { gain, offset }
+    this.driver.setLoadCalibration(gain, offset)
+  }
+
+  /** Simulator only: a reference weight on the idle load cell. */
+  setSimulatedReferenceLoad(loadN: number | null): boolean {
+    if (!(this.driver instanceof MockHardware)) return false
+    this.driver.setSimulatedReferenceLoad(loadN)
+    return true
   }
 
   getSnapshot(): HardwareSnapshot {
@@ -249,6 +264,7 @@ export function buildDriver(
       config.registerMap,
       speeds,
       loadCapacityN,
+      heightCapacityMm,
       options.probeOnly
     )
   }
@@ -262,6 +278,8 @@ export function buildDriver(
 export function initHardware(): HardwareHub {
   const config = loadHardwareConfig()
   hub = new HardwareHub(buildDriver(config), config.driver)
+  const calibration = calibrationsRepo.active()
+  if (calibration) hub.setLoadCalibration(calibration.gain, calibration.offset)
   return hub
 }
 

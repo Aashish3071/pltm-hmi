@@ -17,6 +17,7 @@ import ReadingsPanel from './ReadingsPanel'
 import ModelSelectPanel from './ModelSelectPanel'
 import OperatingButtons from './OperatingButtons'
 import ManualJogControls from './ManualJogControls'
+import SafetyStrip from './SafetyStrip'
 
 interface Props {
   user: UserAccount
@@ -167,7 +168,7 @@ export default function HomeScreen({ user, onOpenSettings, onLogout }: Props): J
       })
       const result = await api.reports.generate(png)
       if (result.ok) {
-        toast.success(`Report saved: ${result.data}`, {
+        toast.success(`Report and certificate ${result.data.certificateNo} saved.`, {
           label: 'OPEN FOLDER',
           run: () => void api.reports.openFolder()
         })
@@ -197,6 +198,8 @@ export default function HomeScreen({ user, onOpenSettings, onLogout }: Props): J
           <StatusBar onModeChange={handleModeChange} />
           <CycleTimePanel />
         </div>
+
+        <SafetyStrip />
 
         <div className="status-row">
           <ReadingsPanel maxHeightMm={maxHeightMm} speeds={speeds} />

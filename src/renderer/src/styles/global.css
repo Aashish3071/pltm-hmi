@@ -807,3 +807,227 @@ select:focus {
 .settings-col > .graph-panel {
   flex: 1 1 auto;
 }
+
+/* ---------- Safety strip (home) ---------- */
+.safety-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.safety-chip {
+  font-size: 10.5px;
+  padding: 3px 8px;
+  border-radius: 10px;
+  border: 1px solid var(--field-border);
+  background: #f1f3f5;
+  color: #555;
+  white-space: nowrap;
+}
+
+.safety-chip b {
+  font-weight: 800;
+  letter-spacing: 0.3px;
+}
+
+.safety-chip.ok {
+  background: #e6f4ea;
+  border-color: #8cc79a;
+  color: #1f6b33;
+}
+
+.safety-chip.bad {
+  background: #fde2e1;
+  border-color: #e08b88;
+  color: #a61e1e;
+  font-weight: 700;
+}
+
+.calibration-notice {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 4px;
+}
+
+.calibration-notice.bad {
+  background: #fde2e1;
+  color: #a61e1e;
+}
+
+.calibration-notice.off {
+  background: #fff3cd;
+  color: #7a5a00;
+}
+
+/* ---------- COM port picker ---------- */
+.connection-panel .port-picker {
+  display: flex;
+  gap: 4px;
+}
+
+.connection-panel .port-picker select {
+  width: 186px;
+}
+
+.connection-panel .framing {
+  display: flex;
+  gap: 4px;
+  width: 186px;
+}
+
+.connection-panel .framing select:nth-child(2) {
+  flex: 1.7;
+}
+
+.connection-panel .framing select {
+  width: auto;
+  flex: 1;
+  min-width: 0;
+}
+
+/* ---------- Settings: wide calibration layout ---------- */
+.settings.settings-wide {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.tabs button {
+  font-size: 10px;
+  padding: 6px 2px;
+}
+
+.calibration-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.calibration-col {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.status-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
+  margin-top: 6px;
+}
+
+.state-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 800;
+  padding: 1px 6px;
+  border-radius: 3px;
+  margin-right: 4px;
+}
+
+.state-badge.ok {
+  background: #2f9e44;
+  color: #fff;
+}
+
+.state-badge.due-soon {
+  background: #f0b429;
+  color: #3b2c00;
+}
+
+.state-badge.overdue,
+.state-badge.missing {
+  background: #c92a2a;
+  color: #fff;
+}
+
+.steps {
+  margin: 0 0 6px 18px;
+  padding: 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.cal-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  background: #fff;
+}
+
+.cal-table th,
+.cal-table td {
+  border: 1px solid var(--panel-orange-border);
+  padding: 4px 6px;
+  text-align: left;
+}
+
+.cal-table th {
+  background: #fbe3c4;
+  font-size: 11px;
+}
+
+.cal-table .unstable {
+  color: #a61e1e;
+  font-weight: 700;
+}
+
+.ref-input {
+  display: flex;
+  gap: 4px;
+}
+
+.ref-input input {
+  width: 80px;
+}
+
+.row-actions {
+  white-space: nowrap;
+}
+
+.row-actions .btn + .btn {
+  margin-left: 4px;
+}
+
+.fit-preview {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.fit-pass {
+  color: #1f6b33;
+  font-weight: 800;
+}
+
+.fit-fail {
+  color: #a61e1e;
+  font-weight: 800;
+}
+
+.section-subtitle {
+  font-size: 11px;
+  font-weight: 800;
+  margin: 10px 0 6px;
+  color: #555;
+  text-transform: uppercase;
+}
+
+.field-row.field-row-top {
+  align-items: flex-start;
+}
+
+.address-input {
+  width: 170px;
+  resize: vertical;
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 6px;
+  border: 1px solid var(--field-border);
+  border-radius: 2px;
+}

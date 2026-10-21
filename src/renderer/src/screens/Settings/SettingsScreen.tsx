@@ -11,6 +11,7 @@ import { api } from '../../api/client'
 import { toast } from '../../state/toastStore'
 import GraphPanel, { loadAxisMax } from '../Home/GraphPanel'
 import AdminGate from './AdminGate'
+import CalibrationPanel from './CalibrationPanel'
 import ConnectionPanel from './ConnectionPanel'
 import MachinePanel from './MachinePanel'
 import ModelConfigPanel, { NEW_MODEL_ID } from './ModelConfigPanel'
@@ -23,7 +24,7 @@ interface Props {
   onLogout: () => void
 }
 
-type Tab = 'users' | 'machine' | 'connection'
+type Tab = 'users' | 'machine' | 'connection' | 'calibration'
 
 const NO_POINTS: { loadN: number; heightMm: number }[] = []
 
@@ -61,7 +62,9 @@ export default function SettingsScreen({ onHome, onLogout }: Props): JSX.Element
       setMachine({
         machineId: s.machine_id ?? '',
         loadCapacityN: Number(s.load_capacity_n),
-        heightCapacityMm: Number(s.height_capacity_mm)
+        heightCapacityMm: Number(s.height_capacity_mm),
+        companyName: s.company_name ?? '',
+        companyAddress: s.company_address ?? ''
       })
       setReportDir(s.resolved_report_dir ?? '')
     }
@@ -97,6 +100,58 @@ export default function SettingsScreen({ onHome, onLogout }: Props): JSX.Element
 
   if (!unlocked) return <AdminGate onPass={() => setUnlocked(true)} onCancel={onHome} />
 
+  const tabBar = (
+    <div className="tabs">
+      <button className={tab === 'users' ? 'active' : ''} onClick={() => setTab('users')}>
+        USERS &amp; SPEED
+      </button>
+      <button className={tab === 'machine' ? 'active' : ''} onClick={() => setTab('machine')}>
+        MACHINE
+      </button>
+      <button
+        className={tab === 'connection' ? 'active' : ''}
+        onClick={() => setTab('connection')}
+      >
+        CONNECTION
+      </button>
+      <button
+        className={tab === 'calibration' ? 'active' : ''}
+        onClick={() => setTab('calibration')}
+      >
+        CALIBRATION
+      </button>
+    </div>
+  )
+
+  const footer = (
+    <div className="settings-footer">
+      <button className="btn yellow" onClick={onHome}>
+        HOME
+      </button>
+      <button className="btn" onClick={onLogout}>
+        LOGOUT
+      </button>
+      <button className="btn red" onClick={() => void api.app.quit()}>
+        CLOSE
+      </button>
+    </div>
+  )
+
+  // Calibration needs the full width for its tables.
+  if (tab === 'calibration') {
+    return (
+      <div className="settings settings-wide">
+        <div className="settings-col">
+          {tabBar}
+          <div className="tab-body">
+            <CalibrationPanel driver={driver} />
+          </div>
+          {footer}
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="settings">
       <div className="settings-col">
@@ -119,20 +174,7 @@ export default function SettingsScreen({ onHome, onLogout }: Props): JSX.Element
       </div>
 
       <div className="settings-col">
-        <div className="tabs">
-          <button className={tab === 'users' ? 'active' : ''} onClick={() => setTab('users')}>
-            USERS &amp; SPEED
-          </button>
-          <button className={tab === 'machine' ? 'active' : ''} onClick={() => setTab('machine')}>
-            MACHINE
-          </button>
-          <button
-            className={tab === 'connection' ? 'active' : ''}
-            onClick={() => setTab('connection')}
-          >
-            CONNECTION
-          </button>
-        </div>
+        {tabBar}
 
         <div className="tab-body">
           {tab === 'users' && (
@@ -163,7 +205,7 @@ export default function SettingsScreen({ onHome, onLogout }: Props): JSX.Element
                     <span className="glyph">&#9888;</span> SIMULATE FAULT
                   </div>
                   <div className="dev-tools">
-                    {(['EMERGENCY', 'SERVO_ERROR', 'SERVO_OFF', 'OVERLOAD', 'DISCONNECT'] as const).map(
+                    {(['EMERGENCY', 'SERVO_ERROR', 'SERVO_OFF', 'OVERLOAD', 'OVER_TRAVEL', 'DISCONNECT'] as const).map(
                       (kind) => (
                         <button key={kind} className="btn small" onClick={() => void simulateFault(kind)}>
                           {kind.replace('_', ' ')}
@@ -182,17 +224,7 @@ export default function SettingsScreen({ onHome, onLogout }: Props): JSX.Element
           {tab === 'connection' && <ConnectionPanel onApplied={() => void loadAll()} />}
         </div>
 
-        <div className="settings-footer">
-          <button className="btn yellow" onClick={onHome}>
-            HOME
-          </button>
-          <button className="btn" onClick={onLogout}>
-            LOGOUT
-          </button>
-          <button className="btn red" onClick={() => void api.app.quit()}>
-            CLOSE
-          </button>
-        </div>
+        {footer}
       </div>
     </div>
   )

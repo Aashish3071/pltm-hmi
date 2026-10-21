@@ -1,4 +1,12 @@
-import type { ModelConfig, SpeedSettings, TestRunSummary, UserAccount } from '@shared/types'
+import type {
+  Calibration,
+  CalibrationPoint,
+  LoadCellCertificate,
+  ModelConfig,
+  SpeedSettings,
+  TestRunSummary,
+  UserAccount
+} from '@shared/types'
 import { getDb } from './index'
 
 interface UserRow {
@@ -180,14 +188,47 @@ export const testRunsRepo = {
     employeeUserId: number
     modelId: number
     partNo: string
+    /** Calibration and load-cell certificate in force when the test ran. */
+    calibrationId?: number | null
+    loadCellCertificateId?: number | null
   }): number {
     return Number(
       getDb()
         .prepare(
-          "INSERT INTO test_runs (employee_user_id, model_id, part_no, started_at) VALUES (?, ?, ?, datetime('now'))"
+          `INSERT INTO test_runs (employee_user_id, model_id, part_no, started_at, calibration_id, load_cell_certificate_id)
+           VALUES (?, ?, ?, datetime('now'), ?, ?)`
         )
-        .run(input.employeeUserId, input.modelId, input.partNo).lastInsertRowid
+        .run(
+          input.employeeUserId,
+          input.modelId,
+          input.partNo,
+          input.calibrationId ?? null,
+          input.loadCellCertificateId ?? null
+        ).lastInsertRowid
     )
+  },
+
+  traceability(runId: number): {
+    calibrationId: number | null
+    loadCellCertificateId: number | null
+    certificateNo: string | null
+  } {
+    const row = getDb()
+      .prepare(
+        'SELECT calibration_id, load_cell_certificate_id, certificate_no FROM test_runs WHERE id = ?'
+      )
+      .get(runId) as
+      | { calibration_id: number | null; load_cell_certificate_id: number | null; certificate_no: string | null }
+      | undefined
+    return {
+      calibrationId: row?.calibration_id ?? null,
+      loadCellCertificateId: row?.load_cell_certificate_id ?? null,
+      certificateNo: row?.certificate_no ?? null
+    }
+  },
+
+  setCertificateNo(runId: number, certificateNo: string): void {
+    getDb().prepare('UPDATE test_runs SET certificate_no = ? WHERE id = ?').run(certificateNo, runId)
   },
 
   addPoints(runId: number, points: { tMs: number; loadN: number; heightMm: number; phase: string }[]): void {
@@ -275,5 +316,157 @@ function mapRunSummary(row: Record<string, unknown>): TestRunSummary {
     maxLoadN: (row.max_load_n as number) ?? null,
     resultStatus: (row.result_status as string) ?? null,
     reportPath: (row.report_path as string) ?? null
+  }
+}
+
+interface CalibrationRow {
+  id: number
+  performed_at: string
+  performed_by: string
+  gain: number
+  offset_n: number
+  points_json: string
+  max_error_n: number
+  max_permissible_error_n: number
+  passed: number
+  reference_device: string
+  reference_certificate_no: string
+  due_date: string
+  notes: string
+}
+
+function mapCalibration(row: CalibrationRow): Calibration {
+  return {
+    id: row.id,
+    performedAt: row.performed_at,
+    performedBy: row.performed_by,
+    gain: row.gain,
+    offset: row.offset_n,
+    points: JSON.parse(row.points_json) as CalibrationPoint[],
+    maxErrorN: row.max_error_n,
+    maxPermissibleErrorN: row.max_permissible_error_n,
+    passed: row.passed === 1,
+    referenceDevice: row.reference_device,
+    referenceCertificateNo: row.reference_certificate_no,
+    dueDate: row.due_date,
+    notes: row.notes
+  }
+}
+
+export const calibrationsRepo = {
+  /** The newest calibration that passed — the one applied to readings. */
+  active(): Calibration | undefined {
+    const row = getDb()
+      .prepare('SELECT * FROM calibrations WHERE passed = 1 ORDER BY id DESC LIMIT 1')
+      .get() as CalibrationRow | undefined
+    return row ? mapCalibration(row) : undefined
+  },
+
+  get(id: number): Calibration | undefined {
+    const row = getDb().prepare('SELECT * FROM calibrations WHERE id = ?').get(id) as
+      | CalibrationRow
+      | undefined
+    return row ? mapCalibration(row) : undefined
+  },
+
+  history(limit = 50): Calibration[] {
+    const rows = getDb()
+      .prepare('SELECT * FROM calibrations ORDER BY id DESC LIMIT ?')
+      .all(limit) as CalibrationRow[]
+    return rows.map(mapCalibration)
+  },
+
+  insert(c: Omit<Calibration, 'id'>): number {
+    return Number(
+      getDb()
+        .prepare(
+          `INSERT INTO calibrations (performed_at, performed_by, gain, offset_n, points_json, max_error_n,
+             max_permissible_error_n, passed, reference_device, reference_certificate_no, due_date, notes)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          c.performedAt,
+          c.performedBy,
+          c.gain,
+          c.offset,
+          JSON.stringify(c.points),
+          c.maxErrorN,
+          c.maxPermissibleErrorN,
+          c.passed ? 1 : 0,
+          c.referenceDevice,
+          c.referenceCertificateNo,
+          c.dueDate,
+          c.notes
+        ).lastInsertRowid
+    )
+  }
+}
+
+interface CertificateRow {
+  id: number
+  lab_name: string
+  accreditation_no: string
+  certificate_no: string
+  load_cell_serial: string
+  calibrated_on: string
+  valid_until: string
+  uncertainty: string
+  file_path: string | null
+}
+
+function mapCertificate(row: CertificateRow): LoadCellCertificate & { filePath: string | null } {
+  return {
+    id: row.id,
+    labName: row.lab_name,
+    accreditationNo: row.accreditation_no,
+    certificateNo: row.certificate_no,
+    loadCellSerial: row.load_cell_serial,
+    calibratedOn: row.calibrated_on,
+    validUntil: row.valid_until,
+    uncertainty: row.uncertainty,
+    fileName: row.file_path ? row.file_path.split(/[\\/]/).pop() ?? null : null,
+    filePath: row.file_path
+  }
+}
+
+export const loadCellCertificatesRepo = {
+  /** The newest recorded certificate. */
+  current(): (LoadCellCertificate & { filePath: string | null }) | undefined {
+    const row = getDb()
+      .prepare('SELECT * FROM load_cell_certificates ORDER BY id DESC LIMIT 1')
+      .get() as CertificateRow | undefined
+    return row ? mapCertificate(row) : undefined
+  },
+
+  get(id: number): (LoadCellCertificate & { filePath: string | null }) | undefined {
+    const row = getDb().prepare('SELECT * FROM load_cell_certificates WHERE id = ?').get(id) as
+      | CertificateRow
+      | undefined
+    return row ? mapCertificate(row) : undefined
+  },
+
+  insert(c: Omit<LoadCellCertificate, 'id' | 'fileName'> & { filePath: string | null }): number {
+    return Number(
+      getDb()
+        .prepare(
+          `INSERT INTO load_cell_certificates (lab_name, accreditation_no, certificate_no, load_cell_serial,
+             calibrated_on, valid_until, uncertainty, file_path)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          c.labName,
+          c.accreditationNo,
+          c.certificateNo,
+          c.loadCellSerial,
+          c.calibratedOn,
+          c.validUntil,
+          c.uncertainty,
+          c.filePath
+        ).lastInsertRowid
+    )
+  },
+
+  setFile(id: number, filePath: string): void {
+    getDb().prepare('UPDATE load_cell_certificates SET file_path = ? WHERE id = ?').run(filePath, id)
   }
 }

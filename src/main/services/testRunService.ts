@@ -10,6 +10,7 @@ import {
 import { getHardware } from '../hardware/HardwareManager'
 import { modelsRepo, testRunsRepo, usersRepo } from '../db/repositories'
 import { CommandError } from '../errors'
+import { assertCalibrationAllowsTest, currentReferences } from './calibrationService'
 
 export { CommandError }
 
@@ -95,6 +96,7 @@ export async function startRun(request: StartRunRequest): Promise<void> {
   if (!usersRepo.findById(request.employeeUserId)) {
     throw new CommandError(ErrorCode.INVALID_INPUT, 'Select a valid employee.')
   }
+  assertCalibrationAllowsTest()
 
   maxLoadN = 0
   lastCycleTimes = { up: 0, down: 0 }
@@ -102,7 +104,8 @@ export async function startRun(request: StartRunRequest): Promise<void> {
   activeRunId = testRunsRepo.create({
     employeeUserId: request.employeeUserId,
     modelId: model.id,
-    partNo
+    partNo,
+    ...currentReferences()
   })
   try {
     await hardware.start(model)

@@ -14,6 +14,8 @@ import {
   type RegisterMap,
   type RegisterSpec,
   type RunPhase,
+  type SafetyState,
+  type SignalSpec,
   type SpeedSettings
 } from '@shared/types'
 import { CommandError } from '../errors'
@@ -23,6 +25,10 @@ import { decode, encode, extract, planReads, type ReadBlock } from './modbusCode
 
 /** Consecutive failed polls before the link is declared down. */
 const MAX_POLL_FAILURES = 3
+/** How often the app bumps the PLC watchdog counter. */
+const HEARTBEAT_INTERVAL_MS = 500
+/** Heartbeat considered healthy if the last write succeeded within this window. */
+const HEARTBEAT_HEALTHY_MS = 2000
 
 type ClientCtor = new () => ModbusClient
 // modbus-serial is CommonJS; bundlers differ on whether the default import is
@@ -36,10 +42,12 @@ const ModbusRTU: ClientCtor =
  * gateway, or Modbus TCP). All addresses come from the admin-editable register
  * map, so commissioning a machine is configuration, not code.
  *
- * The PLC owns the motion state machine; this driver polls its status and
- * telemetry, translates them into the app's status/phase model, and keeps the
- * app-side bookkeeping (cycle timers, run start, reset-before-run) that the
- * PLC does not report.
+ * The PLC owns the motion state machine and the safety functions (E-stop,
+ * overload trip, travel limits, communication watchdog — see
+ * docs/plc-safety-requirements.md). This driver polls status, telemetry and
+ * safety signals, translates them into the app's status/phase model, feeds the
+ * PLC's watchdog, and keeps the app-side bookkeeping (cycle timers, run start,
+ * reset-before-run) that the PLC does not report.
  */
 export class ModbusHardware extends EventEmitter implements HardwareInterface {
   private client: ModbusClient | null = null
@@ -55,13 +63,25 @@ export class ModbusHardware extends EventEmitter implements HardwareInterface {
   private homed = false
   private resetSinceLastRun = true
   private loadN = 0
+  private loadRawN = 0
   private heightMm = 0
+  private calibration = { gain: 1, offset: 0 }
+  private safety: SafetyState = {
+    estop: null,
+    overloadTrip: null,
+    upperLimit: null,
+    lowerLimit: null,
+    heartbeat: false,
+    source: 'plc'
+  }
+  private heartbeatCounter = 0
+  private lastHeartbeatAt = 0
   private model: ModelConfig | null = null
   private runStartMs = 0
   private upCycleSec = 0
   private downCycleSec = 0
   private phaseStartMs = 0
-  /** Software overload trip: latched until RESET, independent of the PLC. */
+  /** Backup software overload trip, latched until RESET. The PLC's own trip is primary. */
   private overloadLatched = false
 
   constructor(
@@ -69,6 +89,7 @@ export class ModbusHardware extends EventEmitter implements HardwareInterface {
     private readonly map: RegisterMap,
     private speeds: SpeedSettings,
     private loadCapacityN: number,
+    private heightCapacityMm: number,
     /** Probe mode (connection test): read-only, never writes to the PLC. */
     private readonly probeOnly = false
   ) {
@@ -110,13 +131,13 @@ export class ModbusHardware extends EventEmitter implements HardwareInterface {
     this.connected = true
     this.pollFailures = 0
     if (this.probeOnly) {
-      this.status = this.plcStatus
+      this.status = this.derivedStatus()
       return
     }
     this.emit('connection', { connected: true })
-    this.applyStatus(this.plcStatus)
-    await this.setSpeeds(this.speeds).catch((error) =>
-      log.warn('Could not write speeds after connect', messageOf(error))
+    this.applyStatus(this.derivedStatus())
+    await this.writeSetpoints().catch((error) =>
+      log.warn('Could not write set-points after connect', messageOf(error))
     )
     this.schedulePoll()
     log.info(`Modbus connected (${describe(c)})`)
@@ -189,7 +210,7 @@ export class ModbusHardware extends EventEmitter implements HardwareInterface {
     this.upCycleSec = 0
     this.downCycleSec = 0
     this.resetSinceLastRun = true
-    this.applyStatus(this.plcStatus)
+    this.applyStatus(this.derivedStatus())
   }
 
   async home(): Promise<void> {
@@ -224,8 +245,31 @@ export class ModbusHardware extends EventEmitter implements HardwareInterface {
     if (jogSpeed) await this.writeValue(jogSpeed, speeds.jog)
   }
 
-  setLoadCapacity(loadCapacityN: number): void {
+  async setLoadCapacity(loadCapacityN: number): Promise<void> {
     this.loadCapacityN = loadCapacityN
+    if (this.connected && this.map.writes.overloadLimit) {
+      await this.writeValue(this.map.writes.overloadLimit, loadCapacityN)
+    }
+  }
+
+  async setHeightCapacity(heightCapacityMm: number): Promise<void> {
+    this.heightCapacityMm = heightCapacityMm
+    if (this.connected && this.map.writes.travelLimit) {
+      await this.writeValue(this.map.writes.travelLimit, heightCapacityMm)
+    }
+  }
+
+  setLoadCalibration(gain: number, offset: number): void {
+    this.calibration = { gain, offset }
+    this.loadN = gain * this.loadRawN + offset
+  }
+
+  /** Speeds plus the limits the PLC enforces itself. */
+  private async writeSetpoints(): Promise<void> {
+    await this.setSpeeds(this.speeds)
+    const { overloadLimit, travelLimit } = this.map.writes
+    if (overloadLimit) await this.writeValue(overloadLimit, this.loadCapacityN)
+    if (travelLimit) await this.writeValue(travelLimit, this.heightCapacityMm)
   }
 
   getSnapshot(): HardwareSnapshot {
@@ -240,7 +284,15 @@ export class ModbusHardware extends EventEmitter implements HardwareInterface {
       phase: phaseOf(this.status),
       upCycleSec: round(this.upCycleSec, 1),
       downCycleSec: round(this.downCycleSec, 1),
-      activeModelId: this.model?.id ?? null
+      activeModelId: this.model?.id ?? null,
+      loadRawN: round(this.loadRawN),
+      safety: {
+        ...this.safety,
+        heartbeat:
+          this.connected &&
+          !!this.map.safety.heartbeat &&
+          Date.now() - this.lastHeartbeatAt < HEARTBEAT_HEALTHY_MS
+      }
     }
   }
 
@@ -252,6 +304,10 @@ export class ModbusHardware extends EventEmitter implements HardwareInterface {
     const specs = [this.map.load, this.map.position, this.map.status]
     if (this.map.mode) specs.push(this.map.mode)
     if (this.map.homed) specs.push(this.map.homed)
+    const { estop, overloadTrip, upperLimit, lowerLimit } = this.map.safety
+    for (const signal of [estop, overloadTrip, upperLimit, lowerLimit]) {
+      if (signal) specs.push(signal)
+    }
     return specs
   }
 
@@ -259,6 +315,7 @@ export class ModbusHardware extends EventEmitter implements HardwareInterface {
     this.pollTimer = setTimeout(async () => {
       try {
         await this.pollOnce()
+        await this.feedWatchdog()
         this.pollFailures = 0
       } catch (error) {
         // A poll still in flight when the link dropped is not a new failure.
@@ -287,7 +344,8 @@ export class ModbusHardware extends EventEmitter implements HardwareInterface {
       return decode(spec, words)
     }
 
-    this.loadN = value(this.map.load)
+    this.loadRawN = value(this.map.load)
+    this.loadN = this.calibration.gain * this.loadRawN + this.calibration.offset
     this.heightMm = value(this.map.position)
     const rawStatus = Math.round(value(this.map.status))
     const mapped = this.map.statusCodes[String(rawStatus)]
@@ -303,6 +361,17 @@ export class ModbusHardware extends EventEmitter implements HardwareInterface {
       ? value(this.map.homed) !== 0
       : this.plcStatus !== HardwareStatus.HOMING_NOT_DONE
 
+    const signal = (spec: SignalSpec | null): boolean | null =>
+      spec ? Math.round(value(spec)) === (spec.activeValue ?? 1) : null
+    const { estop, overloadTrip, upperLimit, lowerLimit } = this.map.safety
+    this.safety = {
+      ...this.safety,
+      estop: signal(estop),
+      overloadTrip: signal(overloadTrip),
+      upperLimit: signal(upperLimit),
+      lowerLimit: signal(lowerLimit)
+    }
+
     if (!this.connected) return
 
     if (
@@ -310,7 +379,7 @@ export class ModbusHardware extends EventEmitter implements HardwareInterface {
       this.loadN > this.loadCapacityN &&
       phaseOf(this.status) !== 'idle'
     ) {
-      // Protect the load cell even if the PLC has not tripped yet.
+      // Backup only: the PLC's own trip should already have acted.
       this.overloadLatched = true
       log.warn(`Software overload trip at ${this.loadN} N (capacity ${this.loadCapacityN} N)`)
       void this.command(this.map.commands.stop).catch((error) =>
@@ -318,13 +387,14 @@ export class ModbusHardware extends EventEmitter implements HardwareInterface {
       )
     }
 
-    this.applyStatus(this.overloadLatched ? HardwareStatus.OVERLOAD : this.plcStatus)
+    this.applyStatus(this.derivedStatus())
     this.tickCycleTimers()
 
     this.emit('telemetry', {
       timestampMs: Date.now(),
       tMs: this.model ? Date.now() - this.runStartMs : 0,
       loadN: round(this.loadN),
+      loadRawN: round(this.loadRawN),
       heightMm: round(this.heightMm),
       phase: phaseOf(this.status),
       upCycleSec: round(this.upCycleSec, 1),
@@ -352,9 +422,30 @@ export class ModbusHardware extends EventEmitter implements HardwareInterface {
     }
   }
 
+  /**
+   * Bumps the watchdog counter. If the app stops (crash, frozen UI, cable
+   * pulled) the counter stops changing and the PLC halts the machine.
+   */
+  private async feedWatchdog(): Promise<void> {
+    const heartbeat = this.map.safety.heartbeat
+    if (!heartbeat || this.probeOnly || !this.connected) return
+    if (Date.now() - this.lastHeartbeatAt < HEARTBEAT_INTERVAL_MS) return
+    this.heartbeatCounter = (this.heartbeatCounter + 1) & 0xffff
+    await this.writeValue(heartbeat, this.heartbeatCounter)
+    this.lastHeartbeatAt = Date.now()
+  }
+
   // -------------------------------------------------------------------------
   // Status translation and cycle timing
   // -------------------------------------------------------------------------
+
+  /** Hard-wired safety signals outrank the PLC's status register. */
+  private derivedStatus(): HardwareStatus {
+    if (this.safety.estop) return HardwareStatus.EMERGENCY_PRESSED
+    if (this.safety.overloadTrip || this.overloadLatched) return HardwareStatus.OVERLOAD
+    if (this.safety.upperLimit || this.safety.lowerLimit) return HardwareStatus.OVER_TRAVEL
+    return this.plcStatus
+  }
 
   private applyStatus(next: HardwareStatus): void {
     const previous = this.status

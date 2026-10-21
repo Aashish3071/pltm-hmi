@@ -4,7 +4,9 @@ import {
   type HardwareDriver,
   type ModbusConnection,
   type RegisterMap,
-  type RegisterSpec
+  type RegisterSpec,
+  type SafetyMap,
+  type SignalSpec
 } from '@shared/types'
 
 export const DEFAULT_CONNECTION: ModbusConnection = {
@@ -60,8 +62,25 @@ export const DEFAULT_REGISTER_MAP: RegisterMap = {
     upSpeed: { area: 'holding', address: 0, dataType: 'uint16', scale: 0.1 },
     downSpeed: { area: 'holding', address: 1, dataType: 'uint16', scale: 0.1 },
     jogSpeed: { area: 'holding', address: 2, dataType: 'uint16', scale: 0.1 },
-    travelDistance: { area: 'holding', address: 3, dataType: 'uint16', scale: 1 }
+    travelDistance: { area: 'holding', address: 3, dataType: 'uint16', scale: 1 },
+    overloadLimit: { area: 'holding', address: 4, dataType: 'uint16', scale: 0.1 },
+    travelLimit: { area: 'holding', address: 5, dataType: 'uint16', scale: 1 }
+  },
+  safety: {
+    estop: { area: 'discrete', address: 1, activeValue: 1 },
+    overloadTrip: { area: 'discrete', address: 2, activeValue: 1 },
+    upperLimit: { area: 'discrete', address: 3, activeValue: 1 },
+    lowerLimit: { area: 'discrete', address: 4, activeValue: 1 },
+    heartbeat: { area: 'holding', address: 6, dataType: 'uint16' }
   }
+}
+
+const NO_SAFETY: SafetyMap = {
+  estop: null,
+  overloadTrip: null,
+  upperLimit: null,
+  lowerLimit: null,
+  heartbeat: null
 }
 
 export class ConfigError extends Error {}
@@ -116,6 +135,14 @@ function checkCommand(path: string, value: unknown): CommandSpec {
   return value as unknown as CommandSpec
 }
 
+function checkSignal(path: string, value: unknown): SignalSpec {
+  const spec = checkRegister(path, value) as SignalSpec
+  if (spec.activeValue !== undefined && !Number.isInteger(spec.activeValue)) {
+    throw new ConfigError(`${path}.activeValue: must be an integer`)
+  }
+  return spec
+}
+
 function optional<T>(value: unknown, check: () => T): T | null {
   return value === null || value === undefined ? null : check()
 }
@@ -153,13 +180,58 @@ export function validateRegisterMap(input: unknown): RegisterMap {
 
   if (!isObject(map.writes)) throw new ConfigError('writes: must be an object')
   const writes = map.writes
-  for (const name of ['upSpeed', 'downSpeed', 'jogSpeed', 'travelDistance'] as const) {
+  const writeNames = ['upSpeed', 'downSpeed', 'jogSpeed', 'travelDistance', 'overloadLimit', 'travelLimit'] as const
+  for (const name of writeNames) {
     optional(writes[name], () =>
       checkRegister(`writes.${name}`, writes[name], { writable: true })
     )
   }
 
-  return input as unknown as RegisterMap
+  // Maps saved before safety signals existed have no `safety` section.
+  const safetyInput = map.safety === undefined || map.safety === null ? {} : map.safety
+  if (!isObject(safetyInput)) throw new ConfigError('safety: must be an object')
+  const safety: SafetyMap = {
+    estop: optional(safetyInput.estop, () => checkSignal('safety.estop', safetyInput.estop)),
+    overloadTrip: optional(safetyInput.overloadTrip, () =>
+      checkSignal('safety.overloadTrip', safetyInput.overloadTrip)
+    ),
+    upperLimit: optional(safetyInput.upperLimit, () =>
+      checkSignal('safety.upperLimit', safetyInput.upperLimit)
+    ),
+    lowerLimit: optional(safetyInput.lowerLimit, () =>
+      checkSignal('safety.lowerLimit', safetyInput.lowerLimit)
+    ),
+    heartbeat: optional(safetyInput.heartbeat, () =>
+      checkRegister('safety.heartbeat', safetyInput.heartbeat, { writable: true })
+    )
+  }
+
+  return {
+    ...(input as unknown as RegisterMap),
+    writes: {
+      upSpeed: (writes.upSpeed ?? null) as RegisterSpec | null,
+      downSpeed: (writes.downSpeed ?? null) as RegisterSpec | null,
+      jogSpeed: (writes.jogSpeed ?? null) as RegisterSpec | null,
+      travelDistance: (writes.travelDistance ?? null) as RegisterSpec | null,
+      overloadLimit: (writes.overloadLimit ?? null) as RegisterSpec | null,
+      travelLimit: (writes.travelLimit ?? null) as RegisterSpec | null
+    },
+    safety: { ...NO_SAFETY, ...safety }
+  }
+}
+
+/** Safety functions the PLC should provide but the map does not connect to. */
+export function missingSafetySignals(map: RegisterMap): string[] {
+  const missing: string[] = []
+  if (!map.safety.estop) missing.push('emergency stop (safety.estop)')
+  if (!map.safety.overloadTrip && !map.writes.overloadLimit) {
+    missing.push('PLC overload trip (safety.overloadTrip or writes.overloadLimit)')
+  }
+  if (!map.safety.heartbeat) missing.push('communication watchdog (safety.heartbeat)')
+  if (!map.safety.upperLimit && !map.writes.travelLimit) {
+    missing.push('over-travel limit (safety.upperLimit or writes.travelLimit)')
+  }
+  return missing
 }
 
 export function validateConnection(input: unknown): ModbusConnection {

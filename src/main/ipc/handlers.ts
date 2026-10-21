@@ -8,6 +8,9 @@ import {
   type IpcResult,
   type JogDirection,
   type MachineMode,
+  type CalibrationDraft,
+  type CalibrationPolicy,
+  type CertificateDraft,
   type MachineSettings,
   type ModelConfig,
   type SerialPortInfo,
@@ -17,12 +20,19 @@ import {
 } from '@shared/types'
 import { getHardware, loadHardwareConfig } from '../hardware/HardwareManager'
 import type { FaultKind } from '../hardware/HardwareInterface'
-import { modelsRepo, settingsRepo, testRunsRepo, usersRepo } from '../db/repositories'
+import {
+  calibrationsRepo,
+  modelsRepo,
+  settingsRepo,
+  testRunsRepo,
+  usersRepo
+} from '../db/repositories'
 import { CommandError } from '../errors'
 import { log, logPath } from '../logger'
 import * as auth from '../services/authService'
+import * as calibration from '../services/calibrationService'
 import * as config from '../services/configService'
-import { generateReport, reportDir, runChartData } from '../services/reportService'
+import { generateReportFiles, reportDir, runChartData } from '../services/reportService'
 import {
   finishRun,
   getActiveRunId,
@@ -162,7 +172,15 @@ export function registerIpcHandlers(): void {
   handle(IPC.HARDWARE_TEST_CONNECTION, 'admin', (input: unknown) => config.testHardwareConfig(input))
   handle(IPC.HARDWARE_LIST_PORTS, 'admin', async (): Promise<SerialPortInfo[]> => {
     const ports = await SerialPort.list()
-    return ports.map((p) => ({ path: p.path, manufacturer: p.manufacturer }))
+    return ports
+      .map((p) => ({
+        path: p.path,
+        manufacturer: p.manufacturer,
+        vendorId: p.vendorId,
+        productId: p.productId,
+        chip: chipName(p.vendorId)
+      }))
+      .sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true }))
   })
   handle(IPC.HARDWARE_RECONNECT, 'user', async () => {
     const connected = await getHardware().tryConnect()
@@ -200,7 +218,7 @@ export function registerIpcHandlers(): void {
   handle(IPC.REPORTS_GENERATE, 'user', async (input: { chartPng?: string }) => {
     const run = testRunsRepo.lastCompleted()
     if (!run) throw new CommandError(ErrorCode.NO_COMPLETED_RUN)
-    return generateReport(run.id, input?.chartPng)
+    return generateReportFiles(run.id, input?.chartPng)
   })
   handle(IPC.REPORTS_OPEN_FOLDER, 'user', async () => {
     const run = testRunsRepo.lastCompleted()
@@ -208,6 +226,61 @@ export function registerIpcHandlers(): void {
     else await shell.openPath(reportDir())
     return true
   })
+
+  // --- calibration ---------------------------------------------------------
+  handle(IPC.CAL_STATUS, 'user', () => calibration.getStatus())
+  handle(IPC.CAL_HISTORY, 'admin', () => calibrationsRepo.history())
+  handle(IPC.CAL_CAPTURE, 'admin', (input: { durationMs?: number }) =>
+    calibration.capture(input?.durationMs)
+  )
+  handle(IPC.CAL_SAVE, 'admin', (draft: CalibrationDraft) =>
+    calibration.save(draft, auth.currentUser()?.displayName ?? 'unknown')
+  )
+  handle(IPC.CAL_SET_POLICY, 'admin', (policy: CalibrationPolicy) => calibration.setPolicy(policy))
+  handle(IPC.CAL_SIMULATE_LOAD, 'admin', (loadN: number | null) => {
+    const value = loadN === null || loadN === undefined ? null : Number(loadN)
+    if (value !== null && (!Number.isFinite(value) || value < 0 || value > 100000)) {
+      throw new CommandError(ErrorCode.INVALID_INPUT, 'Enter a load of 0 N or more.')
+    }
+    if (!getHardware().setSimulatedReferenceLoad(value)) {
+      throw new CommandError(ErrorCode.INVALID_INPUT, 'Simulated loads are only available on the simulator.')
+    }
+    return true
+  })
+  handle(IPC.CERT_SAVE, 'admin', (draft: CertificateDraft) => calibration.saveCertificate(draft))
+  handle(IPC.CERT_ATTACH, 'admin', async () => {
+    const window = BrowserWindow.getFocusedWindow()
+    const options = {
+      properties: ['openFile'] as ('openFile')[],
+      filters: [{ name: 'Certificate', extensions: ['pdf', 'png', 'jpg', 'jpeg'] }]
+    }
+    const result = window
+      ? await dialog.showOpenDialog(window, options)
+      : await dialog.showOpenDialog(options)
+    if (result.canceled || result.filePaths.length === 0) return calibration.getStatus()
+    return calibration.attachCertificateFile(result.filePaths[0])
+  })
+  handle(IPC.CERT_OPEN, 'user', async () => {
+    const error = await shell.openPath(calibration.certificateFilePath())
+    if (error) throw new CommandError(ErrorCode.INVALID_INPUT, `Could not open the certificate: ${error}`)
+    return true
+  })
+}
+
+/** USB-to-serial adapter families by USB vendor id. */
+function chipName(vendorId: string | undefined): string | undefined {
+  switch ((vendorId ?? '').toLowerCase()) {
+    case '0403':
+      return 'FTDI'
+    case '1a86':
+      return 'CH340'
+    case '10c4':
+      return 'CP210x'
+    case '067b':
+      return 'Prolific'
+    default:
+      return undefined
+  }
 }
 
 /** Fan hardware events out to every renderer window. */
@@ -223,6 +296,7 @@ const TERMINAL_STATUSES: HardwareStatus[] = [
   HardwareStatus.EMERGENCY_PRESSED,
   HardwareStatus.SERVO_ERROR,
   HardwareStatus.SERVO_OFF,
+  HardwareStatus.OVER_TRAVEL,
   HardwareStatus.DISCONNECTED
 ]
 

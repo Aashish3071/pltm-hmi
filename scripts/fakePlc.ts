@@ -2,7 +2,9 @@
  * A minimal fake PLTM PLC for integration tests. It speaks Modbus RTU framing
  * (with CRC-16) over a TCP socket — what a serial-to-Ethernet gateway carries —
  * or Modbus TCP (MBAP), and simulates the pantograph using the addresses of
- * DEFAULT_REGISTER_MAP.
+ * DEFAULT_REGISTER_MAP. It also implements the PLC-side safety functions of
+ * docs/plc-safety-requirements.md: latched E-stop, its own overload trip,
+ * a travel limit, and a communication watchdog.
  */
 import net from 'net'
 
@@ -17,6 +19,9 @@ export const STATUS = {
   OVERLOAD: 12
 }
 
+/** Watchdog timeout from the safety requirements. */
+export const WATCHDOG_MS = 2000
+
 export class FakePlc {
   coils = new Array<number>(16).fill(0)
   discrete = new Array<number>(16).fill(0)
@@ -29,8 +34,14 @@ export class FakePlc {
   /** Forces the load reading (for overload tests). */
   loadOverrideN: number | null = null
   manualMode = false
+  /** The physical E-stop button: true while pressed (latched in). */
+  estopPressed = false
+  /** When the safety functions last stopped motion, and why. */
+  lastSafetyStop: 'estop' | 'overload' | 'travel' | 'watchdog' | null = null
   writes = 0
   requests = 0
+  private lastHeartbeat = 0
+  private lastHeartbeatChange = Date.now()
   private haltedPhase: 'up' | 'down' = 'up'
   private timer: NodeJS.Timeout
   private servers: net.Server[] = []
@@ -53,6 +64,33 @@ export class FakePlc {
   get travelMm(): number {
     return this.holding[3]
   }
+  get overloadLimitN(): number {
+    return this.holding[4] * 0.1
+  }
+  get travelLimitMm(): number {
+    return this.holding[5]
+  }
+  get heartbeat(): number {
+    return this.holding[6]
+  }
+  private get moving(): boolean {
+    return (
+      this.status === STATUS.RAISING ||
+      this.status === STATUS.RETRIEVING ||
+      (this.manualMode && (this.coils[4] === 1 || this.coils[5] === 1))
+    )
+  }
+
+  /** Stops all motion: what the PLC does for any safety function. */
+  private safetyStop(reason: NonNullable<FakePlc['lastSafetyStop']>, status: number): void {
+    this.coils[4] = 0
+    this.coils[5] = 0
+    if (this.status === STATUS.RAISING || this.status === STATUS.RETRIEVING) {
+      this.haltedPhase = this.status === STATUS.RAISING ? 'up' : 'down'
+    }
+    this.status = status
+    this.lastSafetyStop = reason
+  }
 
   private onCoilWrite(address: number, value: number): void {
     const rising = value && !this.coils[address]
@@ -60,6 +98,7 @@ export class FakePlc {
     if (!rising) return
     switch (address) {
       case 0: // start
+        if (this.estopPressed || this.discrete[2] || this.discrete[3]) break
         if (this.status === STATUS.READY) this.status = STATUS.RAISING
         else if (this.status === STATUS.HALT) {
           this.status = this.haltedPhase === 'up' ? STATUS.RAISING : STATUS.RETRIEVING
@@ -72,7 +111,11 @@ export class FakePlc {
         }
         break
       case 2: // reset
+        // A pressed E-stop cannot be reset away; it must be released first.
+        if (this.estopPressed) break
         this.loadOverrideN = null
+        this.discrete[2] = 0
+        this.discrete[3] = 0
         this.status = this.discrete[0] ? STATUS.READY : STATUS.HOMING_NOT_DONE
         break
       case 3: // home
@@ -84,7 +127,21 @@ export class FakePlc {
   }
 
   private tick(dt: number): void {
-    if (this.manualMode) {
+    this.discrete[1] = this.estopPressed ? 1 : 0
+    if (this.heartbeat !== this.lastHeartbeat) {
+      this.lastHeartbeat = this.heartbeat
+      this.lastHeartbeatChange = Date.now()
+    }
+    if (this.estopPressed && this.status !== STATUS.EMERGENCY) {
+      this.safetyStop('estop', STATUS.EMERGENCY)
+    } else if (this.moving && Date.now() - this.lastHeartbeatChange > WATCHDOG_MS) {
+      // The app has gone silent: stop as a STOP would.
+      this.safetyStop('watchdog', this.manualMode ? this.status : STATUS.HALT)
+    }
+
+    if (this.status === STATUS.EMERGENCY || this.discrete[2] || this.discrete[3]) {
+      // Latched: nothing moves until RESET.
+    } else if (this.manualMode) {
       if (this.coils[4]) this.positionMm += this.jogSpeed * dt
       if (this.coils[5]) this.positionMm = Math.max(0, this.positionMm - this.jogSpeed * dt)
     } else if (this.status === STATUS.RAISING) {
@@ -102,6 +159,16 @@ export class FakePlc {
     }
     const moving = this.status === STATUS.RAISING || this.status === STATUS.RETRIEVING
     this.loadN = this.loadOverrideN ?? (moving ? 60 + Math.random() : 0)
+
+    if (this.moving && this.overloadLimitN > 0 && this.loadN > this.overloadLimitN) {
+      this.discrete[2] = 1
+      this.safetyStop('overload', STATUS.OVERLOAD)
+    }
+    if (this.moving && this.travelLimitMm > 0 && this.positionMm >= this.travelLimitMm) {
+      this.positionMm = this.travelLimitMm
+      this.discrete[3] = 1
+      this.safetyStop('travel', STATUS.HALT)
+    }
     this.syncInputs()
   }
 

@@ -61,5 +61,40 @@ CREATE TABLE IF NOT EXISTS test_run_points (
 CREATE INDEX IF NOT EXISTS idx_test_run_points_run ON test_run_points(test_run_id);
 `,
   // v2 — models are archived rather than deleted so past test runs keep their model.
-  `ALTER TABLE models ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;`
+  `ALTER TABLE models ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;`,
+  // v3 — load-cell calibration, accredited certificates, and test certificates.
+  `
+CREATE TABLE calibrations (
+  id INTEGER PRIMARY KEY,
+  performed_at TEXT NOT NULL,
+  performed_by TEXT NOT NULL,
+  gain REAL NOT NULL,
+  offset_n REAL NOT NULL,
+  points_json TEXT NOT NULL,
+  max_error_n REAL NOT NULL,
+  max_permissible_error_n REAL NOT NULL,
+  passed INTEGER NOT NULL,
+  reference_device TEXT NOT NULL DEFAULT '',
+  reference_certificate_no TEXT NOT NULL DEFAULT '',
+  due_date TEXT NOT NULL,
+  notes TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE load_cell_certificates (
+  id INTEGER PRIMARY KEY,
+  lab_name TEXT NOT NULL,
+  accreditation_no TEXT NOT NULL DEFAULT '',
+  certificate_no TEXT NOT NULL,
+  load_cell_serial TEXT NOT NULL DEFAULT '',
+  calibrated_on TEXT NOT NULL,
+  valid_until TEXT NOT NULL,
+  uncertainty TEXT NOT NULL DEFAULT '',
+  file_path TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+ALTER TABLE test_runs ADD COLUMN calibration_id INTEGER REFERENCES calibrations(id);
+ALTER TABLE test_runs ADD COLUMN load_cell_certificate_id INTEGER REFERENCES load_cell_certificates(id);
+ALTER TABLE test_runs ADD COLUMN certificate_no TEXT;
+`
 ]

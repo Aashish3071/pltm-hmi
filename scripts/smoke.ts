@@ -9,11 +9,20 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { HardwareStatus, type TelemetryFrame } from '@shared/types'
 import { closeDb, getDb, initDb } from '../src/main/db'
+import { MIGRATIONS } from '../src/main/db/schema'
 import { modelsRepo, settingsRepo, testRunsRepo, usersRepo } from '../src/main/db/repositories'
 import { deleteModel, renameUser, saveModel, setSpeeds } from '../src/main/services/configService'
 import { getHardware, initHardware } from '../src/main/hardware/HardwareManager'
 import { login } from '../src/main/services/authService'
-import { generateReport } from '../src/main/services/reportService'
+import { generateReport, generateReportFiles } from '../src/main/services/reportService'
+import { analyseRun } from '../src/main/services/testAnalysis'
+import { MockHardware } from '../src/main/hardware/MockHardware'
+import {
+  capture as captureCalibration,
+  getStatus as calibrationStatus,
+  save as saveCalibration,
+  setPolicy
+} from '../src/main/services/calibrationService'
 import {
   CommandError,
   finishRun,
@@ -74,7 +83,7 @@ async function main(): Promise<void> {
   const models = modelsRepo.list()
   check('seeds 5 models', models.length === 5, `(got ${models.length})`)
   check('model has 9 points', models[0].points.length === 9)
-  check('schema migrated to latest version', getDb().pragma('user_version', { simple: true }) === 2)
+  check('schema migrated to latest version', getDb().pragma('user_version', { simple: true }) === MIGRATIONS.length)
   check(
     'row 4 height equals distance',
     models[0].points[3].heightMm === models[0].distanceMm,
@@ -286,6 +295,70 @@ async function main(): Promise<void> {
   check('report is non-trivial', existsSync(path) && statSync(path).size > 4000)
   console.log(`        -> ${path}`)
 
+  console.log('\nRun analysis')
+  const synthetic = [
+    ...Array.from({ length: 50 }, (_, i) => ({ loadN: 60, heightMm: 100 + i * 40, phase: 'up' })),
+    ...Array.from({ length: 50 }, (_, i) => ({ loadN: 70, heightMm: 2060 - i * 40, phase: 'down' }))
+  ]
+  const analysis = analyseRun(synthetic)
+  check('mean static force is (Fr + Fl) / 2', analysis.meanStaticN === 65, `(${analysis.meanStaticN})`)
+  check('hysteresis is Fl − Fr', analysis.maxHysteresisN === 10, `(${analysis.maxHysteresisN})`)
+  const sparse = analyseRun([
+    { loadN: 60, heightMm: 0, phase: 'up' }, { loadN: 60, heightMm: 1000, phase: 'up' }, { loadN: 60, heightMm: 2000, phase: 'up' },
+    { loadN: 70, heightMm: 2000, phase: 'down' }, { loadN: 70, heightMm: 1000, phase: 'down' }, { loadN: 70, heightMm: 0, phase: 'down' }
+  ])
+  check('sparse readings are interpolated, not left blank', sparse.rows.every((r) => r.meanN === 65), JSON.stringify(sparse.rows.map((r) => r.meanN)))
+  check('turnarounds excluded from the evaluated band', analysis.fromMm > 100 && analysis.toMm < 2060, `(${analysis.fromMm}-${analysis.toMm})`)
+  check('ten height rows reported', analysis.rows.length === 10 && analysis.rows.every((r) => r.meanN === 65))
+
+  console.log('\nCalibration on the simulator')
+  // A simulated load cell that reads 4% high with a 2 N offset.
+  const sensorError = { gain: 1.04, offset: 2 }
+  await hardware.setDriver(new MockHardware({ sensorError, speeds: settingsRepo.getSpeeds() }), 'simulator')
+  await waitFor(() => hardware.getSnapshot().connected)
+  setPolicy({ enforcement: 'block', intervalMonths: 12, maxPermissibleErrorN: 1 })
+  check('calibration rules are not enforced on the simulator', !calibrationStatus().applies && !calibrationStatus().blocking)
+  const simPoints: { referenceN: number; rawN: number }[] = []
+  for (const referenceN of [0, 49.033, 98.066]) {
+    hardware.setSimulatedReferenceLoad(referenceN)
+    await new Promise((r) => setTimeout(r, 300))
+    const reading = await captureCalibration(800)
+    simPoints.push({ referenceN, rawN: reading.rawN })
+  }
+  const simCal = saveCalibration({ points: simPoints, referenceDevice: 'Sim weights', referenceCertificateNo: '', notes: '' }, 'ADMIN')
+  check('calibration fit passes', simCal.passed, `(max error ${simCal.maxErrorN} N)`)
+  check('fit recovers the simulated sensor error', Math.abs(simCal.gain - 1.04) < 0.005 && Math.abs(simCal.offset - 2) < 0.1, `(gain ${simCal.gain}, offset ${simCal.offset})`)
+  hardware.setSimulatedReferenceLoad(68.6)
+  await new Promise((r) => setTimeout(r, 300))
+  check('readings are corrected', Math.abs(hardware.getSnapshot().loadN - 68.6) < 0.15, `(${hardware.getSnapshot().loadN} N vs raw ${hardware.getSnapshot().loadRawN} N)`)
+  await hardware.setDriver(new MockHardware({ sensorError, speeds: settingsRepo.getSpeeds() }), 'simulator')
+  await waitFor(() => hardware.getSnapshot().connected)
+  hardware.setSimulatedReferenceLoad(68.6)
+  await new Promise((r) => setTimeout(r, 300))
+  check('calibration survives a driver change', Math.abs(hardware.getSnapshot().loadN - 68.6) < 0.15, `(${hardware.getSnapshot().loadN} N)`)
+  hardware.setSimulatedReferenceLoad(null)
+  setPolicy({ enforcement: 'warn', intervalMonths: 12, maxPermissibleErrorN: 1 })
+
+  console.log('\nTest certificate (PDF)')
+  const { readFileSync } = await import('fs')
+  const certRun = testRunsRepo.lastCompleted()!
+  const files = await generateReportFiles(certRun.id)
+  check('certificate number allocated', /^PLTM-0001\/\d{4}\/00001$/.test(files.certificateNo), `(${files.certificateNo})`)
+  check('Excel report written', existsSync(files.excelPath))
+  check('PDF certificate written', existsSync(files.pdfPath) && readFileSync(files.pdfPath).subarray(0, 5).toString() === '%PDF-')
+  check('PDF is a full document', existsSync(files.pdfPath) && statSync(files.pdfPath).size > 20000, `(${existsSync(files.pdfPath) ? statSync(files.pdfPath).size : 0} bytes)`)
+  const again = await generateReportFiles(certRun.id)
+  check('a run keeps its certificate number', again.certificateNo === files.certificateNo)
+  await homeMachine()
+  await resetMachine()
+  await homeMachine()
+  await startRun(request)
+  await waitFor(() => hardware.getSnapshot().status === HardwareStatus.READY)
+  const nextRun = testRunsRepo.lastCompleted()!
+  const nextFiles = await generateReportFiles(nextRun.id)
+  check('the next run gets the next number', nextFiles.certificateNo.endsWith('/00002'), `(${nextFiles.certificateNo})`)
+  console.log(`        -> ${files.pdfPath}`)
+
   console.log('\nCrash recovery')
   testRunsRepo.create({ employeeUserId: 1, modelId: models[0].id, partNo: 'ORPHAN' })
   closeDb()
@@ -297,6 +370,10 @@ async function main(): Promise<void> {
   console.log(failures === 0 ? '\nAll checks passed.\n' : `\n${failures} check(s) failed.\n`)
   app.exit(failures === 0 ? 0 : 1)
 }
+
+// The certificate renderer opens and closes a hidden window; with no other
+// window open Electron would otherwise quit when it closes.
+app.on('window-all-closed', () => undefined)
 
 app.whenReady().then(() =>
   main().catch((error) => {

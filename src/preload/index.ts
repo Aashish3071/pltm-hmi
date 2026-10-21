@@ -1,6 +1,12 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import {
   IPC,
+  type Calibration,
+  type CalibrationCapture,
+  type CalibrationDraft,
+  type CalibrationPolicy,
+  type CalibrationStatus,
+  type CertificateDraft,
   type ConnectionEvent,
   type CycleCompleteEvent,
   type HardwareConfig,
@@ -11,6 +17,7 @@ import {
   type MachineMode,
   type MachineSettings,
   type ModelConfig,
+  type ReportResult,
   type SerialPortInfo,
   type SpeedSettings,
   type StartRunRequest,
@@ -90,6 +97,18 @@ const api = {
     onCycleComplete: (cb: (event: CycleCompleteEvent) => void) =>
       subscribe(IPC.EVT_CYCLE_COMPLETE, cb)
   },
+  calibration: {
+    status: () => invoke<CalibrationStatus>(IPC.CAL_STATUS),
+    history: () => invoke<Calibration[]>(IPC.CAL_HISTORY),
+    capture: (durationMs?: number) => invoke<CalibrationCapture>(IPC.CAL_CAPTURE, { durationMs }),
+    save: (draft: CalibrationDraft) => invoke<Calibration>(IPC.CAL_SAVE, draft),
+    setPolicy: (policy: CalibrationPolicy) => invoke<CalibrationPolicy>(IPC.CAL_SET_POLICY, policy),
+    simulateLoad: (loadN: number | null) => invoke<boolean>(IPC.CAL_SIMULATE_LOAD, loadN),
+    saveCertificate: (draft: CertificateDraft) =>
+      invoke<CalibrationStatus>(IPC.CERT_SAVE, draft),
+    attachCertificate: () => invoke<CalibrationStatus>(IPC.CERT_ATTACH),
+    openCertificate: () => invoke<boolean>(IPC.CERT_OPEN)
+  },
   reports: {
     lastRun: () => invoke<TestRunSummary | null>(IPC.REPORTS_LAST_RUN),
     runPoints: () =>
@@ -99,7 +118,7 @@ const api = {
         envelope: { loadN: number; heightMm: number }[]
         maxHeightMm: number
       }>(IPC.REPORTS_RUN_POINTS),
-    generate: (chartPng?: string) => invoke<string>(IPC.REPORTS_GENERATE, { chartPng }),
+    generate: (chartPng?: string) => invoke<ReportResult>(IPC.REPORTS_GENERATE, { chartPng }),
     openFolder: () => invoke<boolean>(IPC.REPORTS_OPEN_FOLDER)
   }
 }

@@ -9,14 +9,26 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { HardwareStatus, type HardwareConfig } from '@shared/types'
 import { closeDb, initDb } from '../src/main/db'
-import { modelsRepo, settingsRepo, testRunsRepo } from '../src/main/db/repositories'
+import { calibrationsRepo, modelsRepo, settingsRepo, testRunsRepo } from '../src/main/db/repositories'
 import { DEFAULT_CONNECTION, DEFAULT_REGISTER_MAP } from '../src/main/hardware/config'
 import { getHardware, initHardware } from '../src/main/hardware/HardwareManager'
 import { decode, encode, planReads } from '../src/main/hardware/modbusCodec'
-import { setHardwareConfig, testHardwareConfig } from '../src/main/services/configService'
+import {
+  capture as captureCalibration,
+  save as saveCalibration,
+  saveCertificate,
+  setPolicy,
+  today
+} from '../src/main/services/calibrationService'
+import {
+  setHardwareConfig,
+  setMachineSettings,
+  testHardwareConfig
+} from '../src/main/services/configService'
 import {
   CommandError,
   finishRun,
+  getActiveRunId,
   homeMachine,
   jogMachine,
   recordCycle,
@@ -108,7 +120,13 @@ async function main(): Promise<void> {
   hardware.on('status', (status) => {
     statusLog.push(status)
     if (
-      [HardwareStatus.READY, HardwareStatus.OVERLOAD, HardwareStatus.DISCONNECTED].includes(status)
+      [
+        HardwareStatus.READY,
+        HardwareStatus.OVERLOAD,
+        HardwareStatus.EMERGENCY_PRESSED,
+        HardwareStatus.OVER_TRAVEL,
+        HardwareStatus.DISCONNECTED
+      ].includes(status)
     ) {
       finishRun(status)
     }
@@ -138,6 +156,19 @@ async function main(): Promise<void> {
   check('reports HOMING NOT DONE from PLC', hardware.getSnapshot().status === HardwareStatus.HOMING_NOT_DONE)
   check('speeds written on connect (2000 mm/s -> raw 20000)', await waitFor(() => plc.holding[0] === 20000, 2000), `(${plc.holding[0]})`)
   hardware.startSupervision()
+
+  console.log('\nSafety set-points and watchdog feed')
+  check('overload limit written to PLC on connect (250 N -> raw 2500)', await waitFor(() => plc.holding[4] === 2500, 2000), `(${plc.holding[4]})`)
+  check('travel limit written to PLC on connect (4000 mm)', plc.holding[5] === 4000, `(${plc.holding[5]})`)
+  const beatBefore = plc.heartbeat
+  await sleep(1200)
+  check('app feeds the PLC watchdog', plc.heartbeat !== beatBefore, `(${beatBefore} -> ${plc.heartbeat})`)
+  check('snapshot reports the watchdog as fed', hardware.getSnapshot().safety.heartbeat === true)
+  check('safety signals read from the PLC', hardware.getSnapshot().safety.estop === false && hardware.getSnapshot().safety.overloadTrip === false)
+  const machine = { machineId: 'PLTM-0001', companyName: 'Novatek', companyAddress: '' }
+  await setMachineSettings({ ...machine, loadCapacityN: 200, heightCapacityMm: 3900 })
+  check('changing capacities updates the PLC limits', plc.holding[4] === 2000 && plc.holding[5] === 3900, `(${plc.holding[4]}, ${plc.holding[5]})`)
+  await setMachineSettings({ ...machine, loadCapacityN: 250, heightCapacityMm: 4000 })
 
   const model = modelsRepo.list()[0]
   const request = { modelId: model.id, employeeUserId: 1, partNo: 'MB-001' }
@@ -179,17 +210,60 @@ async function main(): Promise<void> {
   check('resume keeps the paused run model', hardware.getSnapshot().activeModelId === model.id)
   check('resumed run completes', await waitFor(() => hardware.getSnapshot().status === HardwareStatus.READY, 20000))
 
-  console.log('\nSoftware overload trip')
+  console.log('\nPLC overload trip')
   await resetMachine()
   await startRun(request)
   await waitFor(() => hardware.getSnapshot().status === HardwareStatus.PANTO_RAISING, 2000)
   plc.loadOverrideN = 300
-  check('app trips OVERLOAD above capacity', await waitFor(() => hardware.getSnapshot().status === HardwareStatus.OVERLOAD, 3000))
-  check('PLC was commanded to stop', await waitFor(() => plc.status === STATUS.HALT, 2000), `(PLC status ${plc.status})`)
+  check('PLC trips by itself at its overload limit', await waitFor(() => plc.lastSafetyStop === 'overload', 2000), `(${plc.lastSafetyStop})`)
+  check('app shows OVERLOAD from the PLC flag', await waitFor(() => hardware.getSnapshot().status === HardwareStatus.OVERLOAD, 3000))
+  check('overload flag visible in safety state', hardware.getSnapshot().safety.overloadTrip === true)
   check('run closed as OVERLOAD', testRunsRepo.lastCompleted()?.resultStatus === HardwareStatus.OVERLOAD)
   await expectError('start blocked while overloaded', 'ERR_FAULT_ACTIVE', () => startRun(request))
   await resetMachine()
   check('RESET clears overload', await waitFor(() => hardware.getSnapshot().status !== HardwareStatus.OVERLOAD, 2000))
+
+  console.log('\nHard-wired E-stop')
+  await waitFor(() => hardware.getSnapshot().status === HardwareStatus.READY, 2000)
+  await startRun(request)
+  await waitFor(() => hardware.getSnapshot().heightMm > 200, 5000)
+  plc.estopPressed = true
+  check('E-stop shown at once', await waitFor(() => hardware.getSnapshot().status === HardwareStatus.EMERGENCY_PRESSED, 1000))
+  check('E-stop visible in safety state', hardware.getSnapshot().safety.estop === true)
+  const stoppedAt = plc.positionMm
+  await sleep(400)
+  check('machine does not move while E-stop is pressed', Math.abs(plc.positionMm - stoppedAt) < 0.01)
+  check('run closed as EMERGENCY PRESSED', testRunsRepo.lastCompleted()?.resultStatus === HardwareStatus.EMERGENCY_PRESSED)
+  await expectError('START refused during E-stop', 'ERR_FAULT_ACTIVE', () => startRun(request))
+  await resetMachine()
+  await sleep(300)
+  check('RESET cannot clear a pressed E-stop', hardware.getSnapshot().status === HardwareStatus.EMERGENCY_PRESSED)
+  plc.estopPressed = false
+  await sleep(400)
+  check('releasing the E-stop does not restart anything', hardware.getSnapshot().status === HardwareStatus.EMERGENCY_PRESSED && Math.abs(plc.positionMm - stoppedAt) < 0.01)
+  await resetMachine()
+  check('release + RESET recovers', await waitFor(() => hardware.getSnapshot().status !== HardwareStatus.EMERGENCY_PRESSED, 2000))
+
+  console.log('\nOver-travel limit')
+  await homeMachine()
+  await waitFor(() => hardware.getSnapshot().status === HardwareStatus.READY, 2000)
+  await hardware.setHeightCapacity(600)
+  plc.manualMode = true
+  await waitFor(() => hardware.getSnapshot().mode === 'MANUAL', 2000)
+  await jogMachine('UP', true)
+  const holdUp = setInterval(() => void jogMachine('UP', true), 200)
+  const tripped = await waitFor(() => hardware.getSnapshot().status === HardwareStatus.OVER_TRAVEL, 4000)
+  clearInterval(holdUp)
+  await jogMachine('UP', false).catch(() => undefined)
+  check('jogging into the limit trips OVER TRAVEL', tripped, `(${hardware.getSnapshot().status})`)
+  check('PLC stopped at its travel limit', plc.lastSafetyStop === 'travel' && plc.positionMm <= 600.01, `(${plc.positionMm})`)
+  check('limit visible in safety state', hardware.getSnapshot().safety.upperLimit === true)
+  await hardware.setHeightCapacity(4000)
+  await resetMachine()
+  check('RESET clears the over-travel', await waitFor(() => hardware.getSnapshot().status !== HardwareStatus.OVER_TRAVEL, 2000))
+  plc.manualMode = false
+  await waitFor(() => hardware.getSnapshot().mode === 'AUTO', 2000)
+  await homeMachine()
 
   console.log('\nManual mode and jog watchdog')
   await expectError('mode change routed to pendant', 'ERR_INVALID_INPUT', () => setMachineMode('MANUAL'))
@@ -217,7 +291,9 @@ async function main(): Promise<void> {
   await startRun(request)
   await waitFor(() => hardware.getSnapshot().status === HardwareStatus.PANTO_RAISING, 2000)
   await plc.closeServers()
+  const silentAt = Date.now()
   check('link loss detected', await waitFor(() => !hardware.getSnapshot().connected, 5000))
+  check('PLC watchdog halts the machine when the app goes silent', await waitFor(() => plc.lastSafetyStop === 'watchdog' && plc.status === STATUS.HALT, 4000), `(${plc.lastSafetyStop}, status ${plc.status}, ${Date.now() - silentAt} ms)`)
   check('status shows DISCONNECTED', hardware.getSnapshot().status === HardwareStatus.DISCONNECTED)
   check('in-progress run closed', testRunsRepo.lastCompleted()?.resultStatus === HardwareStatus.DISCONNECTED, `(${testRunsRepo.lastCompleted()?.resultStatus})`)
   await expectError('commands refused while disconnected', 'ERR_HARDWARE_DISCONNECTED', () => homeMachine())
@@ -232,6 +308,45 @@ async function main(): Promise<void> {
   plc.resetConnections()
   check('hard reset detected within 3 s', await waitFor(() => !hardware.getSnapshot().connected, 3000), `(${Date.now() - resetAt} ms)`)
   check('reconnects after a hard reset', await waitFor(() => hardware.getSnapshot().connected, 8000))
+
+  console.log('\nLoad-cell calibration and enforcement')
+  await resetMachine()
+  await homeMachine()
+  await waitFor(() => hardware.getSnapshot().status === HardwareStatus.READY, 2000)
+  settingsRepo.setSpeeds({ up: 2000, down: 2000, jog: 1000 })
+  await hardware.setSpeeds({ up: 2000, down: 2000, jog: 1000 })
+  setPolicy({ enforcement: 'block', intervalMonths: 12, maxPermissibleErrorN: 1 })
+  await expectError('tests blocked when never calibrated', 'ERR_CALIBRATION_REQUIRED', () => startRun(request))
+  // The simulated load cell reads 3% high with a 1.2 N offset.
+  const sensor = (trueN: number): number => trueN * 1.03 + 1.2
+  const calPoints: { referenceN: number; rawN: number }[] = []
+  let allStable = true
+  for (const trueN of [0, 49.033, 98.066]) {
+    plc.loadOverrideN = sensor(trueN)
+    await sleep(300)
+    const reading = await captureCalibration(800)
+    allStable = allStable && reading.stable
+    calPoints.push({ referenceN: trueN, rawN: reading.rawN })
+  }
+  check('captured readings are steady', allStable)
+  const calibration = saveCalibration({ points: calPoints, referenceDevice: 'M1 weights', referenceCertificateNo: 'W-001', notes: '' }, 'ADMIN')
+  check('calibration passes and is saved', calibration.passed && calibrationsRepo.active()?.id === calibration.id)
+  check('fit recovers the sensor error', Math.abs(calibration.gain - 1 / 1.03) < 0.001 && Math.abs(calibration.offset - -1.2 / 1.03) < 0.05, `(gain ${calibration.gain}, offset ${calibration.offset})`)
+  plc.loadOverrideN = sensor(68.6)
+  await sleep(400)
+  check('live load is corrected after calibration', Math.abs(hardware.getSnapshot().loadN - 68.6) < 0.05, `(${hardware.getSnapshot().loadN} N, raw ${hardware.getSnapshot().loadRawN} N)`)
+  plc.loadOverrideN = null
+  await expectError('still blocked without an accredited certificate', 'ERR_CALIBRATION_REQUIRED', () => startRun(request))
+  const nextYear = `${Number(today().slice(0, 4)) + 1}${today().slice(4)}`
+  saveCertificate({ labName: 'Test Lab', accreditationNo: 'CC-1234', certificateNo: 'LC-2026-001', loadCellSerial: 'LC1', calibratedOn: today(), validUntil: nextYear, uncertainty: '0.1 %' })
+  await startRun(request)
+  const trace = testRunsRepo.traceability(getActiveRunId()!)
+  check('test allowed once calibrated and certified', hardware.getSnapshot().status === HardwareStatus.PANTO_RAISING || hardware.getSnapshot().status === HardwareStatus.PANTO_RETRIEVING)
+  check('run records its calibration and certificate', trace.calibrationId === calibration.id && trace.loadCellCertificateId !== null)
+  await waitFor(() => hardware.getSnapshot().status === HardwareStatus.READY, 15000)
+  const bad = saveCalibration({ points: [{ referenceN: 0, rawN: 0 }, { referenceN: 50, rawN: 60 }, { referenceN: 100, rawN: 100 }], referenceDevice: '', referenceCertificateNo: '', notes: '' }, 'ADMIN')
+  check('a failed calibration is recorded but not applied', !bad.passed && calibrationsRepo.active()?.id === calibration.id)
+  setPolicy({ enforcement: 'warn', intervalMonths: 12, maxPermissibleErrorN: 1 })
 
   console.log('\nModbus TCP transport')
   await resetMachine()

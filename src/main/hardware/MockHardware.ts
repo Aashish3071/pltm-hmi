@@ -31,6 +31,12 @@ export class MockHardware extends EventEmitter implements HardwareInterface {
   private resetSinceLastRun = true
   private heightMm = 0
   private loadN = 0
+  private loadRawN = 0
+  private calibration = { gain: 1, offset: 0 }
+  /** How the simulated load cell misreads: raw = (true − offset) / gain. */
+  private sensorError = { gain: 1, offset: 0 }
+  /** A reference weight hung on the idle load cell, for practising calibration. */
+  private simulatedReferenceN: number | null = null
   private phase: RunPhase = 'idle'
   private model: ModelConfig | null = null
   private speeds: SpeedSettings = { up: 50, down: 50, jog: 50 }
@@ -49,11 +55,13 @@ export class MockHardware extends EventEmitter implements HardwareInterface {
     loadCapacityN?: number
     heightCapacityMm?: number
     speeds?: SpeedSettings
+    sensorError?: { gain: number; offset: number }
   }) {
     super()
     if (options?.loadCapacityN) this.loadCapacityN = options.loadCapacityN
     if (options?.heightCapacityMm) this.heightCapacityMm = options.heightCapacityMm
     if (options?.speeds) this.speeds = options.speeds
+    if (options?.sensorError) this.sensorError = options.sensorError
   }
 
   async connect(): Promise<void> {
@@ -134,12 +142,20 @@ export class MockHardware extends EventEmitter implements HardwareInterface {
     this.speeds = speeds
   }
 
-  setLoadCapacity(loadCapacityN: number): void {
+  async setLoadCapacity(loadCapacityN: number): Promise<void> {
     this.loadCapacityN = loadCapacityN
   }
 
-  setHeightCapacity(heightCapacityMm: number): void {
+  async setHeightCapacity(heightCapacityMm: number): Promise<void> {
     this.heightCapacityMm = heightCapacityMm
+  }
+
+  setLoadCalibration(gain: number, offset: number): void {
+    this.calibration = { gain, offset }
+  }
+
+  setSimulatedReferenceLoad(loadN: number | null): void {
+    this.simulatedReferenceN = loadN
   }
 
   async forceFault(kind: FaultKind): Promise<void> {
@@ -160,6 +176,11 @@ export class MockHardware extends EventEmitter implements HardwareInterface {
         this.phase = 'idle'
         this.loadN = this.loadCapacityN + 10
         this.setStatus(HardwareStatus.OVERLOAD)
+        break
+      case 'OVER_TRAVEL':
+        this.phase = 'idle'
+        this.jogging = null
+        this.setStatus(HardwareStatus.OVER_TRAVEL)
         break
       case 'DISCONNECT':
         this.outageUntil = Date.now() + SIMULATED_OUTAGE_MS
@@ -182,7 +203,17 @@ export class MockHardware extends EventEmitter implements HardwareInterface {
       phase: this.effectivePhase(),
       upCycleSec: round(this.upCycleSec, 1),
       downCycleSec: round(this.downCycleSec, 1),
-      activeModelId: this.model?.id ?? null
+      activeModelId: this.model?.id ?? null,
+      loadRawN: round(this.loadRawN),
+      // The simulator stands in for the PLC's safety inputs.
+      safety: {
+        estop: this.status === HardwareStatus.EMERGENCY_PRESSED,
+        overloadTrip: this.status === HardwareStatus.OVERLOAD,
+        upperLimit: this.status === HardwareStatus.OVER_TRAVEL,
+        lowerLimit: false,
+        heartbeat: this.connected,
+        source: 'simulator'
+      }
     }
   }
 
@@ -221,7 +252,11 @@ export class MockHardware extends EventEmitter implements HardwareInterface {
     if (this.mode === 'MANUAL' && this.jogging && !FAULT_STATUSES.includes(this.status)) {
       const delta = this.speeds.jog * dt * (this.jogging.direction === 'UP' ? 1 : -1)
       this.heightMm = clamp(this.heightMm + delta, 0, this.heightCapacityMm)
-      if (this.homed && this.heightMm > 0.5) {
+      if (this.heightMm >= this.heightCapacityMm) {
+        // The simulated upper limit switch.
+        this.jogging = null
+        this.setStatus(HardwareStatus.OVER_TRAVEL)
+      } else if (this.homed && this.heightMm > 0.5) {
         this.homed = false
         this.setStatus(HardwareStatus.HOMING_NOT_DONE)
       }
@@ -247,9 +282,17 @@ export class MockHardware extends EventEmitter implements HardwareInterface {
       }
     }
 
-    this.loadN = this.model ? this.loadAt(this.heightMm, this.effectivePhase()) : 0
+    const moving = this.effectivePhase() !== 'idle'
+    const trueLoadN =
+      this.model && (moving || this.simulatedReferenceN === null)
+        ? this.loadAt(this.heightMm, this.effectivePhase())
+        : this.simulatedReferenceN !== null
+          ? this.simulatedReferenceN + (Math.random() - 0.5) * 0.1
+          : 0
+    this.loadRawN = (trueLoadN - this.sensorError.offset) / this.sensorError.gain
+    this.loadN = this.calibration.gain * this.loadRawN + this.calibration.offset
 
-    if (this.loadN > this.loadCapacityN && this.effectivePhase() !== 'idle') {
+    if (this.loadN > this.loadCapacityN && moving) {
       this.phase = 'idle'
       this.setStatus(HardwareStatus.OVERLOAD)
     }
@@ -258,6 +301,7 @@ export class MockHardware extends EventEmitter implements HardwareInterface {
       timestampMs: Date.now(),
       tMs: this.runStartMs ? Date.now() - this.runStartMs : 0,
       loadN: round(this.loadN),
+      loadRawN: round(this.loadRawN),
       heightMm: round(this.heightMm),
       phase: this.effectivePhase(),
       upCycleSec: round(this.upCycleSec, 1),
@@ -275,11 +319,14 @@ export class MockHardware extends EventEmitter implements HardwareInterface {
   private loadAt(height: number, phase: RunPhase): number {
     if (!this.model || this.model.points.length < 2) return 0
     const points = [...this.model.points].sort((a, b) => a.rowIndex - b.rowIndex)
-    const peakIndex = points.reduce(
-      (best, p, i) => (p.heightMm > points[best].heightMm ? i : best),
-      0
-    )
-    const branch = phase === 'down' ? points.slice(peakIndex) : points.slice(0, peakIndex + 1)
+    const top = Math.max(...points.map((p) => p.heightMm))
+    // The profile can hold two points at the top (and at the bottom) where the
+    // curve turns; the up branch ends at the first, the down branch starts at the last.
+    const firstPeak = points.findIndex((p) => p.heightMm === top)
+    const lastPeak = points.length - 1 - [...points].reverse().findIndex((p) => p.heightMm === top)
+    const raw = phase === 'down' ? points.slice(lastPeak) : points.slice(0, firstPeak + 1)
+    const seen = new Set<number>()
+    const branch = raw.filter((p) => !seen.has(p.heightMm) && seen.add(p.heightMm))
     const usable = branch.length >= 2 ? branch : points
     const noise = (Math.random() - 0.5) * 0.4
     return interpolateByHeight(usable, height) + (phase === 'idle' ? 0 : noise)

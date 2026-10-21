@@ -4,3 +4,5 @@ dist/
 .DS_Store
 *.log
 scripts/out/
+research_notes/
+reports/

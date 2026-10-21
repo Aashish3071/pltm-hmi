@@ -10,7 +10,9 @@ export const HardwareStatus = {
   HALT: 'HALT',
   PANTO_RAISING: 'PANTO RAISING',
   PANTO_RAISING_COMPLETED: 'PANTO RAISING COMPLETED',
-  PANTO_RETRIEVING: 'PANTO RETRIVING'
+  PANTO_RETRIEVING: 'PANTO RETRIVING',
+  /** A travel limit switch was reached. */
+  OVER_TRAVEL: 'OVER TRAVEL'
 } as const
 export type HardwareStatus = (typeof HardwareStatus)[keyof typeof HardwareStatus]
 
@@ -19,7 +21,8 @@ export const FAULT_STATUSES: HardwareStatus[] = [
   HardwareStatus.EMERGENCY_PRESSED,
   HardwareStatus.SERVO_ERROR,
   HardwareStatus.OVERLOAD,
-  HardwareStatus.SERVO_OFF
+  HardwareStatus.SERVO_OFF,
+  HardwareStatus.OVER_TRAVEL
 ]
 
 export type MachineMode = 'AUTO' | 'MANUAL'
@@ -30,7 +33,10 @@ export interface TelemetryFrame {
   timestampMs: number
   /** ms since the current run started; 0 when idle. */
   tMs: number
+  /** Calibrated load. */
   loadN: number
+  /** Load before the calibration correction — what calibration captures. */
+  loadRawN: number
   heightMm: number
   phase: RunPhase
   /** Live cycle timers, excluding time spent in HALT. */
@@ -55,6 +61,22 @@ export interface HardwareSnapshot {
   downCycleSec: number
   /** Set while a run is in progress or paused; null once reset. */
   activeModelId: number | null
+  loadRawN: number
+  safety: SafetyState
+}
+
+/**
+ * Safety signals as reported by the machine's PLC (or the simulator).
+ * `null` = that signal is not mapped, so the app cannot see it.
+ */
+export interface SafetyState {
+  estop: boolean | null
+  overloadTrip: boolean | null
+  upperLimit: boolean | null
+  lowerLimit: boolean | null
+  /** The app is feeding the PLC's communication watchdog. */
+  heartbeat: boolean
+  source: 'plc' | 'simulator'
 }
 
 export interface CycleCompleteEvent {
@@ -105,6 +127,9 @@ export interface MachineSettings {
   machineId: string
   loadCapacityN: number
   heightCapacityMm: number
+  /** Printed on test certificates. */
+  companyName: string
+  companyAddress: string
 }
 
 /** Upper bound for any configured speed, in mm/s. */
@@ -150,6 +175,27 @@ export interface RegisterSpec {
   scale?: number
 }
 
+/** A digital signal read from the PLC; `activeValue` (default 1) means the condition is present. */
+export interface SignalSpec extends RegisterSpec {
+  activeValue?: number
+}
+
+/**
+ * Safety functions live in the PLC and its wiring; these are how the app sees
+ * them. See docs/plc-safety-requirements.md.
+ */
+export interface SafetyMap {
+  /** E-stop chain open (pressed). */
+  estop: SignalSpec | null
+  /** PLC overload trip latched. */
+  overloadTrip: SignalSpec | null
+  /** Upper / lower over-travel limit switch reached. */
+  upperLimit: SignalSpec | null
+  lowerLimit: SignalSpec | null
+  /** Holding register the app increments every 500 ms; the PLC stops motion if it stalls. */
+  heartbeat: RegisterSpec | null
+}
+
 /** A command written to the PLC. `pulseMs` > 0 writes `value`, then 0 after the delay. */
 export interface CommandSpec {
   area: 'coil' | 'holding'
@@ -184,7 +230,12 @@ export interface RegisterMap {
     jogSpeed: RegisterSpec | null
     /** Travel distance (row 4 height), written before each START. */
     travelDistance: RegisterSpec | null
+    /** Load capacity (N) the PLC trips at; written on connect and when changed. */
+    overloadLimit: RegisterSpec | null
+    /** Height capacity (mm), the PLC's soft travel limit; written on connect and when changed. */
+    travelLimit: RegisterSpec | null
   }
+  safety: SafetyMap
 }
 
 export interface HardwareConfig {
@@ -196,6 +247,110 @@ export interface HardwareConfig {
 export interface SerialPortInfo {
   path: string
   manufacturer?: string
+  vendorId?: string
+  productId?: string
+  /** Adapter chip family recognised from the USB vendor id, e.g. "FTDI". */
+  chip?: string
+}
+
+// ---------------------------------------------------------------------------
+// Load-cell calibration
+// ---------------------------------------------------------------------------
+
+export interface CalibrationPoint {
+  /** Known applied force from the reference weight or reference load cell. */
+  referenceN: number
+  /** Averaged raw reading captured for it. */
+  rawN: number
+  /** Reading after applying this calibration. */
+  correctedN: number
+  errorN: number
+}
+
+export interface Calibration {
+  id: number
+  performedAt: string
+  performedBy: string
+  /** corrected = gain × raw + offset */
+  gain: number
+  offset: number
+  points: CalibrationPoint[]
+  maxErrorN: number
+  maxPermissibleErrorN: number
+  passed: boolean
+  referenceDevice: string
+  referenceCertificateNo: string
+  /** YYYY-MM-DD */
+  dueDate: string
+  notes: string
+}
+
+/** The accredited (NABL / ISO/IEC 17025) certificate for the bench's load cell. */
+export interface LoadCellCertificate {
+  id: number
+  labName: string
+  accreditationNo: string
+  certificateNo: string
+  loadCellSerial: string
+  /** YYYY-MM-DD */
+  calibratedOn: string
+  /** YYYY-MM-DD */
+  validUntil: string
+  uncertainty: string
+  fileName: string | null
+}
+
+export type ValidityState = 'ok' | 'due-soon' | 'overdue' | 'missing'
+
+export interface CalibrationPolicy {
+  /** What happens when calibration or the certificate is overdue or missing. */
+  enforcement: 'warn' | 'block'
+  intervalMonths: number
+  maxPermissibleErrorN: number
+}
+
+export interface CalibrationStatus {
+  calibration: Calibration | null
+  certificate: LoadCellCertificate | null
+  calibrationState: ValidityState
+  certificateState: ValidityState
+  daysToCalibrationDue: number | null
+  daysToCertificateDue: number | null
+  policy: CalibrationPolicy
+  /** Calibration is enforced on the real machine only, not on the simulator. */
+  applies: boolean
+  /** Tests are blocked right now because of calibration. */
+  blocking: boolean
+}
+
+export interface CalibrationCapture {
+  rawN: number
+  stdDevN: number
+  samples: number
+  stable: boolean
+}
+
+export interface CalibrationDraft {
+  points: { referenceN: number; rawN: number }[]
+  referenceDevice: string
+  referenceCertificateNo: string
+  notes: string
+}
+
+export interface CertificateDraft {
+  labName: string
+  accreditationNo: string
+  certificateNo: string
+  loadCellSerial: string
+  calibratedOn: string
+  validUntil: string
+  uncertainty: string
+}
+
+export interface ReportResult {
+  excelPath: string
+  pdfPath: string
+  certificateNo: string
 }
 
 export interface TestRunSummary {
@@ -235,6 +390,7 @@ export const ErrorCode = {
   DUPLICATE_NAME: 'ERR_DUPLICATE_NAME',
   NOT_AUTHORIZED: 'ERR_NOT_AUTHORIZED',
   CONNECTION_FAILED: 'ERR_CONNECTION_FAILED',
+  CALIBRATION_REQUIRED: 'ERR_CALIBRATION_REQUIRED',
   INTERNAL: 'ERR_INTERNAL'
 } as const
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode]
@@ -245,6 +401,8 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   [ErrorCode.DUPLICATE_NAME]: 'That name is already in use.',
   [ErrorCode.NOT_AUTHORIZED]: 'Administrator access is required for this action.',
   [ErrorCode.CONNECTION_FAILED]: 'Could not connect to the machine.',
+  [ErrorCode.CALIBRATION_REQUIRED]:
+    'Load-cell calibration or its certificate is overdue. An administrator must calibrate before testing.',
   [ErrorCode.INTERNAL]: 'Unexpected error. Details were written to the application log.',
   [ErrorCode.NOT_HOMED]: 'Homing not done. Press HOMING before starting a test.',
   [ErrorCode.RESET_REQUIRED]: 'Press RESET before starting a new test cycle.',
@@ -303,6 +461,16 @@ export const IPC = {
   REPORTS_OPEN_FOLDER: 'reports:open-folder',
   REPORTS_LAST_RUN: 'reports:last-run',
   REPORTS_RUN_POINTS: 'reports:run-points',
+
+  CAL_STATUS: 'calibration:status',
+  CAL_HISTORY: 'calibration:history',
+  CAL_CAPTURE: 'calibration:capture',
+  CAL_SAVE: 'calibration:save',
+  CAL_SET_POLICY: 'calibration:set-policy',
+  CAL_SIMULATE_LOAD: 'calibration:simulate-load',
+  CERT_SAVE: 'certificate:save',
+  CERT_ATTACH: 'certificate:attach',
+  CERT_OPEN: 'certificate:open',
 
   /** main -> renderer push events */
   EVT_TELEMETRY: 'evt:telemetry',

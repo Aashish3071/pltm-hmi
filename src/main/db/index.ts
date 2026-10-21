@@ -52,7 +52,13 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   report_output_dir: '',
   hardware_driver: 'simulator',
   modbus_connection: JSON.stringify(DEFAULT_CONNECTION),
-  modbus_register_map: JSON.stringify(DEFAULT_REGISTER_MAP, null, 2)
+  modbus_register_map: JSON.stringify(DEFAULT_REGISTER_MAP, null, 2),
+  company_name: 'Novatek',
+  company_address: '',
+  calibration_enforcement: 'warn',
+  calibration_interval_months: '12',
+  calibration_mpe_n: '1',
+  certificate_seq: '0'
 }
 
 /**

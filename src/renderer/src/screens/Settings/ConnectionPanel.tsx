@@ -14,6 +14,29 @@ interface Props {
 }
 
 const BAUD_RATES = [1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200]
+const PORT_REFRESH_MS = 3000
+const MANUAL_PORT = '__manual__'
+
+/** Mirrors the main process check; the map may be raw JSON from the editor. */
+function missingSafety(map: unknown): string[] {
+  const m = (map ?? {}) as {
+    safety?: Record<string, unknown>
+    writes?: Record<string, unknown>
+  }
+  const safety = m.safety ?? {}
+  const writes = m.writes ?? {}
+  const missing: string[] = []
+  if (!safety.estop) missing.push('emergency stop (safety.estop)')
+  if (!safety.overloadTrip && !writes.overloadLimit) missing.push('PLC overload trip')
+  if (!safety.heartbeat) missing.push('communication watchdog (safety.heartbeat)')
+  if (!safety.upperLimit && !writes.travelLimit) missing.push('over-travel limit')
+  return missing
+}
+
+function portLabel(port: SerialPortInfo): string {
+  const maker = port.chip ? `${port.chip} USB adapter` : port.manufacturer
+  return maker ? `${port.path} — ${maker}` : port.path
+}
 
 export default function ConnectionPanel({ onApplied }: Props): JSX.Element {
   const [config, setConfig] = useState<HardwareConfig | null>(null)
@@ -21,6 +44,7 @@ export default function ConnectionPanel({ onApplied }: Props): JSX.Element {
   const [ports, setPorts] = useState<SerialPortInfo[]>([])
   const [busy, setBusy] = useState<'test' | 'save' | null>(null)
   const [testResult, setTestResult] = useState('')
+  const [manualPort, setManualPort] = useState(false)
 
   const loadPorts = async (): Promise<void> => {
     const result = await api.hardware.listPorts()
@@ -37,8 +61,16 @@ export default function ConnectionPanel({ onApplied }: Props): JSX.Element {
         toast.error(result.message)
       }
     })()
-    void loadPorts()
   }, [])
+
+  // Adapters get plugged in during commissioning: keep the list current.
+  const transport = config?.connection.transport
+  useEffect(() => {
+    if (transport !== 'rtu-serial') return
+    void loadPorts()
+    const timer = window.setInterval(() => void loadPorts(), PORT_REFRESH_MS)
+    return () => window.clearInterval(timer)
+  }, [transport])
 
   if (!config) return <div className="panel orange">Loading…</div>
 
@@ -77,10 +109,14 @@ export default function ConnectionPanel({ onApplied }: Props): JSX.Element {
   const save = async (): Promise<void> => {
     const candidate = buildConfig(config.driver)
     if (!candidate) return
+    const missing = candidate.driver === 'modbus' ? missingSafety(candidate.registerMap) : []
+    const safetyNote = missing.length
+      ? `\n\nThe map does not connect these PLC safety functions, so the app cannot show them:\n• ${missing.join('\n• ')}\nSee docs/plc-safety-requirements.md.`
+      : ''
     if (
       candidate.driver === 'modbus' &&
       !window.confirm(
-        'Switch to the real machine over Modbus?\n\nMake sure the register map has been checked against the PLC program. Wrong addresses can command the machine unexpectedly.'
+        `Switch to the real machine over Modbus?\n\nMake sure the register map has been checked against the PLC program. Wrong addresses can command the machine unexpectedly.${safetyNote}`
       )
     ) {
       return
@@ -136,24 +172,49 @@ export default function ConnectionPanel({ onApplied }: Props): JSX.Element {
         <>
           <div className="field-row">
             <label>COM PORT</label>
-            <div style={{ display: 'flex', gap: 4 }}>
-              <input
-                list="pltm-serial-ports"
-                value={conn.serialPath}
-                onChange={(e) => setConn({ serialPath: e.target.value })}
-                style={{ width: 110 }}
-              />
-              <datalist id="pltm-serial-ports">
+            <div className="port-picker">
+              <select
+                aria-label="COM port"
+                value={manualPort ? MANUAL_PORT : conn.serialPath}
+                onChange={(e) => {
+                  if (e.target.value === MANUAL_PORT) {
+                    setManualPort(true)
+                  } else {
+                    setManualPort(false)
+                    setConn({ serialPath: e.target.value })
+                  }
+                }}
+              >
+                {ports.length === 0 && !conn.serialPath && <option value="">No COM ports found</option>}
+                {conn.serialPath && !ports.some((p) => p.path === conn.serialPath) && (
+                  <option value={conn.serialPath}>{conn.serialPath} (not plugged in)</option>
+                )}
                 {ports.map((p) => (
                   <option key={p.path} value={p.path}>
-                    {p.manufacturer ?? ''}
+                    {portLabel(p)}
                   </option>
                 ))}
-              </datalist>
-              <button className="btn small" onClick={() => void loadPorts()} title="Refresh ports">
+                <option value={MANUAL_PORT}>Other — type the port name…</option>
+              </select>
+              <button className="btn small" onClick={() => void loadPorts()} title="Search for COM ports again">
                 &#8635;
               </button>
             </div>
+          </div>
+          {manualPort && (
+            <div className="field-row">
+              <label>PORT NAME</label>
+              <input
+                placeholder="e.g. COM7"
+                value={conn.serialPath}
+                onChange={(e) => setConn({ serialPath: e.target.value.trim() })}
+              />
+            </div>
+          )}
+          <div className="hint" style={{ marginTop: -2, marginBottom: 6 }}>
+            {ports.length === 0
+              ? 'No COM ports found. Plug in the USB-RS485 adapter and install its driver; this list updates by itself.'
+              : `${ports.length} COM port${ports.length === 1 ? '' : 's'} found. Unplug and replug the adapter to see which one is yours.`}
           </div>
           <div className="field-row">
             <label>BAUD RATE</label>
@@ -167,7 +228,7 @@ export default function ConnectionPanel({ onApplied }: Props): JSX.Element {
           </div>
           <div className="field-row">
             <label>DATA / PARITY / STOP</label>
-            <div style={{ display: 'flex', gap: 4 }}>
+            <div className="framing">
               <select
                 value={conn.dataBits}
                 onChange={(e) => setConn({ dataBits: Number(e.target.value) as 7 | 8 })}
