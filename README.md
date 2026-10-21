@@ -2,11 +2,15 @@
 
 Operator software for Novatek's **Pantograph Load Testing Machine** (PLTM). It runs on the machine's Windows touchscreen PC, talks to the PLTM Control Box over **Modbus RTU**, plots load against height live during a test, and saves an Excel report for every test. It replaces the original `Main_Gui.exe` and follows the same screens and workflow as the machine's user manual.
 
+### ⬇ [Download the Windows installer (PLTM-HMI-Setup.exe)](https://github.com/Aashish3071/pltm-hmi/releases/latest)
+
+> The green **Code → Download ZIP** button gives the *source code only* — it does not contain the installer. Use the link above, then click the `.exe` under **Assets**.
+
 ![Home screen after a completed test](docs/screenshots/home-test-complete.png)
 
 ## Download and install (Windows)
 
-1. Open the **[Releases](https://github.com/Aashish3071/pltm-hmi/releases/latest)** page and download `PLTM-HMI-Setup-<version>.exe`.
+1. Open the **[latest Release](https://github.com/Aashish3071/pltm-hmi/releases/latest)** and, under **Assets**, download `PLTM-HMI-Setup-<version>.exe`. Download it directly on the Windows PC: sending the `.exe` by chat or email can corrupt or block it.
 2. Run it on the Windows PC. If Windows shows *"Windows protected your PC"*, click **More info → Run anyway** (the installer is not code-signed).
 3. Start **PLTM HMI** from the desktop shortcut and log in as `ADMIN` / `admin`.
 4. Open **SETTINGS** and change all four passwords before anyone else uses it.
