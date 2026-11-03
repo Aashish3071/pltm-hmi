@@ -65,7 +65,7 @@ The full step-by-step commissioning procedure, register map reference and troubl
 
 ## Development
 
-Built with Electron, React and TypeScript ([electron-vite](https://electron-vite.org)), SQLite ([better-sqlite3](https://github.com/WiseLibs/better-sqlite3)), [modbus-serial](https://github.com/yaacov/node-modbus-serial) and [serialport](https://serialport.io), [ExcelJS](https://github.com/exceljs/exceljs) for reports, packaged with [electron-builder](https://www.electron.build).
+Built with Electron, React and TypeScript ([electron-vite](https://electron-vite.org)), SQLite (Node's built-in [`node:sqlite`](https://nodejs.org/api/sqlite.html), so there is no native database module to rebuild), [modbus-serial](https://github.com/yaacov/node-modbus-serial) and [serialport](https://serialport.io), [ExcelJS](https://github.com/exceljs/exceljs) for reports, packaged with [electron-builder](https://www.electron.build).
 
 ```bash
 npm install

@@ -1,6 +1,6 @@
 # Tests PLTM HMI on Windows and builds the installer there.
 # Every push/PR: run the test suites on windows-latest.
-# A tag like v1.0.1: also build PLTM HMI-Setup-<version>.exe and publish it
+# A tag like v1.0.1: also build PLTM-HMI-Setup-<version>.exe and publish it
 # as a GitHub Release (only if the Windows tests pass).
 name: Windows
 

@@ -1,18 +1,18 @@
 import { join } from 'path'
 import { app } from 'electron'
-import Database from 'better-sqlite3'
+import { Database } from './sqlite'
 import bcrypt from 'bcryptjs'
 import { MIGRATIONS } from './schema'
 import { DEFAULT_CONNECTION, DEFAULT_REGISTER_MAP } from '../hardware/config'
 
-let db: Database.Database | null = null
+let db: Database | null = null
 
-export function getDb(): Database.Database {
+export function getDb(): Database {
   if (!db) throw new Error('Database not initialised — call initDb() first')
   return db
 }
 
-export function initDb(): Database.Database {
+export function initDb(): Database {
   const file = join(app.getPath('userData'), 'pltm.db')
   db = new Database(file)
   db.pragma('journal_mode = WAL')
@@ -32,7 +32,7 @@ export function closeDb(): void {
   db = null
 }
 
-function migrate(database: Database.Database): void {
+function migrate(database: Database): void {
   const current = database.pragma('user_version', { simple: true }) as number
   for (let version = current; version < MIGRATIONS.length; version++) {
     database.transaction(() => {
@@ -151,7 +151,7 @@ const DEFAULT_USERS: { slot: string; role: 'admin' | 'operator'; password: strin
   { slot: 'OPERATOR3', role: 'operator', password: 'operator3' }
 ]
 
-function seed(database: Database.Database): void {
+function seed(database: Database): void {
   const insertSetting = database.prepare(
     'INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)'
   )
