@@ -27,11 +27,14 @@ Each release is built and tested on Windows by GitHub Actions ([workflow](.githu
 
 - **Login and users**: four accounts (ADMIN, OPERATOR1-3), passwords stored hashed. Settings need the admin password.
 - **Live test screen**: load (N) vs height (mm) graph over the model's profile, status bar, live readings, up/down cycle timers.
-- **Operating buttons** as in the original HMI: START, STOP / RESUME, RESET, HOMING, REPORT, SETTINGS, LOGOUT, CLOSE.
+- **Operating buttons** as in the original HMI: START, STOP / RESUME, RESET, HOMING, REPORT, SETTINGS, LOGOUT, CLOSE, plus HISTORY.
+- **Test history**: search past tests by Part-No, model, result and date, see each one's graph, and reprint its report and certificate (it keeps its certificate number).
 - **Models**: create, edit and delete test profiles of 9 load/height points; row 4's height is the travel distance.
 - **Reports and test certificates**: REPORT saves an Excel workbook and a numbered PDF test certificate per test: raising force Fr, lowering force Fl, mean static contact force (Fr + Fl) / 2 and hysteresis Fl − Fr by height, the force/height graph, the calibration in force on the test date, signature blocks, and a SHA-256 fingerprint of the stored record.
 - **Load-cell calibration**: multi-point calibration with reference weights (least-squares fit, live error preview, pass/fail against a maximum permissible error), the accredited (NABL / ISO 17025) load-cell certificate with its scanned file, due-date tracking, and an optional policy that blocks tests when either is overdue. Every test records which calibration and certificate it ran under.
 - **Machine connection** over Modbus RTU through a USB-to-RS485 adapter (COM port picked from a list of detected ports) or an Ethernet gateway (RTU over TCP, or Modbus TCP). Addresses come from an editable register map, so commissioning needs no code changes.
+- **Backup and restore** (SETTINGS → DATA): an automatic daily backup of all data and attached certificate files, BACK UP NOW, a backup folder that can be on another drive or USB stick, and restore. If the database is ever damaged, the app offers to restore the newest backup when it starts.
+- **Forgotten ADMIN password**: FORGOT ADMIN PASSWORD? on the login screen shows a request code; Novatek support answers with a one-time response code ([below](#admin-password-recovery-for-novatek-support)).
 - **Simulator** built in, for training and for running without the machine.
 - **Safety**: E-stop, overload trip, travel limits and a communication watchdog run in the PLC ([requirements](docs/plc-safety-requirements.md)); the app reads their signals, shows them on the Home screen, sends the PLC its overload and travel limits, and feeds the watchdog. On top of that: a backup software overload trip, HOMING and START guard rails, hold-to-run jog that stops within 0.6 s if the hold is lost, automatic reconnection, and tests cut short by a disconnect or power loss are recorded as such.
 
@@ -60,6 +63,7 @@ The full step-by-step commissioning procedure, register map reference and troubl
 | Users, models, settings, test history | `%APPDATA%\pltm-hmi\pltm.db` |
 | Log file | `%APPDATA%\pltm-hmi\logs\pltm.log` |
 | Excel reports | `Documents\PLTM Reports` (changeable in Settings) |
+| Backups | `Documents\PLTM Backups` (changeable in SETTINGS → DATA) |
 
 ---
 
@@ -103,6 +107,18 @@ git tag v1.0.1 && git push origin v1.0.1
 
 GitHub Actions runs the tests on Windows, builds the installer there and attaches it to a new Release.
 
+### Admin password recovery (for Novatek support)
+
+When a customer forgets the ADMIN password, they open **FORGOT ADMIN PASSWORD?** on the login screen and read out the **machine ID** and **request code**. Turn those into the response code with:
+
+```bash
+PLTM_RECOVERY_SECRET=<the secret> npm run recovery-code -- 7KQ2-M9XD PLTM-0001
+```
+
+The customer types the response code and chooses a new ADMIN password. A request code lasts 30 minutes, works once, and is replaced after 5 wrong response codes.
+
+The secret is compiled into the installer from the `PLTM_RECOVERY_SECRET` repository secret (**Settings → Secrets and variables → Actions**). Create it once, with a long random value, and keep a copy somewhere safe: anyone who has it can reset the ADMIN password on any machine, and without it you cannot answer requests from installers built with it. The release workflow refuses to build a release without it. Development builds made without the secret use a public development key (`npm run recovery-code -- <code> <machine id> --dev`).
+
 ### Project layout
 
 | Path | Contents |
@@ -110,7 +126,7 @@ GitHub Actions runs the tests on Windows, builds the installer there and attache
 | `src/main/` | Electron main process: database, services, IPC handlers |
 | `src/main/hardware/` | Hardware layer: `HardwareManager` (driver hub, reconnect, jog watchdog), `ModbusHardware`, `MockHardware` (simulator), register map validation |
 | `src/preload/` | The typed `window.pltm` API exposed to the UI |
-| `src/renderer/` | React UI: Login, Home, Settings screens |
+| `src/renderer/` | React UI: Login, Home, History, Settings screens |
 | `src/shared/types.ts` | Types, statuses, error codes and IPC channel names shared by both sides |
 | `scripts/` | Test suites, fake PLC, icon generator, build hooks |
 | `resources/` | App icon (`icon.png`, `icon.ico`) |

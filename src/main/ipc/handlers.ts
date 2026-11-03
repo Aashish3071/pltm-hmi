@@ -32,6 +32,7 @@ import { CommandError } from '../errors'
 import { log, logPath } from '../logger'
 import * as auth from '../services/authService'
 import * as backup from '../services/backupService'
+import * as recovery from '../services/recoveryService'
 import * as calibration from '../services/calibrationService'
 import * as config from '../services/configService'
 import { generateReportFiles, reportDir, runChartData } from '../services/reportService'
@@ -120,6 +121,12 @@ export function registerIpcHandlers(): void {
   })
   handle(IPC.AUTH_ADMIN_CHECK, 'user', (password: string) => {
     if (!auth.unlockAdmin(password)) throw new CommandError(ErrorCode.INVALID_CREDENTIALS)
+    return true
+  })
+  // Forgotten ADMIN password, from the login screen (no session).
+  handle(IPC.AUTH_RECOVERY_REQUEST, 'public', () => recovery.getRecoveryRequest())
+  handle(IPC.AUTH_RECOVERY_COMPLETE, 'public', (input: { response: string; password: string }) => {
+    recovery.completeRecovery(String(input?.response ?? ''), String(input?.password ?? ''))
     return true
   })
   handle(IPC.AUTH_ADMIN_LOCK, 'public', () => {

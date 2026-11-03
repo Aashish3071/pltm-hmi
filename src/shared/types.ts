@@ -447,6 +447,13 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   [ErrorCode.NO_COMPLETED_RUN]: 'No completed test run available to report.'
 }
 
+/** Shown on the login screen when the ADMIN password is forgotten. */
+export interface RecoveryRequest {
+  requestCode: string
+  machineId: string
+  expiresAt: string
+}
+
 export type BackupKind = 'auto' | 'manual' | 'pre-restore'
 
 /** One backup folder: the database plus the attached certificate files. */
@@ -514,6 +521,9 @@ export const IPC = {
   BACKUP_PICK_DIR: 'backup:pick-dir',
   BACKUP_PICK_RESTORE: 'backup:pick-restore',
   BACKUP_RESTORE: 'backup:restore',
+
+  AUTH_RECOVERY_REQUEST: 'auth:recovery-request',
+  AUTH_RECOVERY_COMPLETE: 'auth:recovery-complete',
 
   REPORTS_SEARCH: 'reports:search',
   REPORTS_GENERATE: 'reports:generate',

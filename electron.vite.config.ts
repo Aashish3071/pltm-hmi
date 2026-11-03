@@ -5,6 +5,10 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   main: {
     plugins: [externalizeDepsPlugin()],
+    // Vendor secret for admin password recovery codes; see recoveryService.ts.
+    define: {
+      __PLTM_RECOVERY_SECRET__: JSON.stringify(process.env.PLTM_RECOVERY_SECRET ?? '')
+    },
     resolve: {
       alias: {
         '@shared': resolve('src/shared')

@@ -16,6 +16,7 @@
     "test:serial": "esbuild scripts/serial-test.ts --bundle --platform=node --format=cjs --outfile=scripts/out/serial-test.cjs --external:electron --external:exceljs --external:serialport --external:modbus-serial --alias:@shared=./src/shared && electron scripts/out/serial-test.cjs",
     "test:e2e": "electron-vite build && esbuild scripts/e2e.ts --bundle --platform=node --format=cjs --outfile=scripts/out/e2e.cjs --external:playwright-core && node scripts/out/e2e.cjs",
     "test": "npm run typecheck && npm run smoke && npm run test:modbus && npm run test:serial && npm run test:e2e",
+    "recovery-code": "esbuild scripts/recovery-code.ts --bundle --platform=node --format=cjs --outfile=scripts/out/recovery-code.cjs --log-level=warning && node scripts/out/recovery-code.cjs",
     "icon": "esbuild scripts/make-icon.ts --bundle --platform=node --format=cjs --outfile=scripts/out/make-icon.cjs --external:electron && electron scripts/out/make-icon.cjs",
     "dist:win": "npm run build && node scripts/build-win.cjs",
     "dist:mac": "npm run build && electron-builder --mac"

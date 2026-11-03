@@ -7,6 +7,7 @@ import { getHardware, initHardware } from './hardware/HardwareManager'
 import { broadcast, onRunStatusChange, registerIpcHandlers } from './ipc/handlers'
 import { log } from './logger'
 import { latestRestorableBackup, restoreBackup, startAutoBackup, stopAutoBackup } from './services/backupService'
+import { usingDevRecoverySecret } from './services/recoveryService'
 import { abortActiveRun, getActiveRunId, recordCycle, recordTelemetry } from './services/testRunService'
 
 // Two instances would contend for the database and the machine's COM port.
@@ -143,6 +144,9 @@ function bootstrap(): void {
     }
 
     log.info(`Starting PLTM HMI ${app.getVersion()}`)
+    if (usingDevRecoverySecret()) {
+      log.warn('Built without PLTM_RECOVERY_SECRET: admin recovery codes use the development key')
+    }
     const hardware = initHardware()
     registerIpcHandlers()
     wireHardwareEvents()

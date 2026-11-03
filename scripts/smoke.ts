@@ -28,6 +28,9 @@ import {
 } from '../src/main/services/backupService'
 import { attachCertificateFile, saveCertificate } from '../src/main/services/calibrationService'
 import { dbPath } from '../src/main/db'
+import { completeRecovery, getRecoveryRequest } from '../src/main/services/recoveryService'
+import { DEV_RECOVERY_SECRET, newRequestCode, responseCode, responseMatches } from '../src/main/services/recoveryCode'
+import { changePassword as changeUserPassword } from '../src/main/services/configService'
 import {
   capture as captureCalibration,
   getStatus as calibrationStatus,
@@ -394,6 +397,26 @@ async function main(): Promise<void> {
   initDb()
   const orphan = getDb().prepare("SELECT result_status FROM test_runs WHERE part_no = 'ORPHAN'").get() as { result_status: string }
   check('run left open by a crash is closed as ABORTED', orphan?.result_status === 'ABORTED')
+
+  console.log('\nAdmin password recovery')
+  check('request codes are random and readable', /^[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$/.test(newRequestCode()) && newRequestCode() !== newRequestCode())
+  const req = getRecoveryRequest()
+  check('the request code stays the same until used', getRecoveryRequest().requestCode === req.requestCode)
+  const answer = responseCode(DEV_RECOVERY_SECRET, req.requestCode, req.machineId)
+  check('response depends on the machine ID', answer !== responseCode(DEV_RECOVERY_SECRET, req.requestCode, 'OTHER-MACHINE'))
+  check('response depends on the secret', answer !== responseCode('another-secret', req.requestCode, req.machineId))
+  check('look-alike letters are accepted', responseMatches(DEV_RECOVERY_SECRET, req.requestCode.toLowerCase(), req.machineId, answer.replace(/0/g, 'O').replace(/1/g, 'I').toLowerCase()))
+  await expectError('a wrong response code is refused', 'ERR_INVALID_CREDENTIALS', async () => completeRecovery('AAAAA-AAAAA', 'newpass'))
+  await expectError('a too-short new password is refused', 'ERR_INVALID_INPUT', async () => completeRecovery(answer, 'ab'))
+  completeRecovery(answer, 'recovered')
+  check('the right code sets the new ADMIN password', login('ADMIN', 'recovered') !== null && login('ADMIN', 'admin') === null)
+  check('a used request code is replaced', getRecoveryRequest().requestCode !== req.requestCode)
+  const fresh = getRecoveryRequest()
+  for (let i = 0; i < 5; i++) {
+    try { completeRecovery('AAAAA-AAAAA', 'whatever') } catch { /* expected */ }
+  }
+  check('5 wrong codes discard the request code', getRecoveryRequest().requestCode !== fresh.requestCode)
+  changeUserPassword(usersRepo.list().find((u) => u.role === 'admin')!.id, 'admin')
 
   console.log('\nTest history search')
   const all = testRunsRepo.search({})

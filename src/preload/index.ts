@@ -19,6 +19,7 @@ import {
   type MachineMode,
   type MachineSettings,
   type ModelConfig,
+  type RecoveryRequest,
   type ReportResult,
   type SerialPortInfo,
   type SpeedSettings,
@@ -51,7 +52,10 @@ const api = {
       invoke<UserAccount>(IPC.AUTH_LOGIN, { username, password }),
     logout: () => invoke<boolean>(IPC.AUTH_LOGOUT),
     adminCheck: (password: string) => invoke<boolean>(IPC.AUTH_ADMIN_CHECK, password),
-    adminLock: () => invoke<boolean>(IPC.AUTH_ADMIN_LOCK)
+    adminLock: () => invoke<boolean>(IPC.AUTH_ADMIN_LOCK),
+    recoveryRequest: () => invoke<RecoveryRequest>(IPC.AUTH_RECOVERY_REQUEST),
+    recoveryComplete: (response: string, password: string) =>
+      invoke<boolean>(IPC.AUTH_RECOVERY_COMPLETE, { response, password })
   },
   users: {
     list: () => invoke<UserAccount[]>(IPC.USERS_LIST),

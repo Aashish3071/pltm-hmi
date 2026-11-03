@@ -1,6 +1,8 @@
 import { useState, type FormEvent } from 'react'
 import type { UserAccount } from '@shared/types'
 import { api } from '../../api/client'
+import { toast } from '../../state/toastStore'
+import RecoveryDialog from './RecoveryDialog'
 
 interface Props {
   onLogin: (user: UserAccount) => void
@@ -11,6 +13,7 @@ export default function LoginScreen({ onLogin }: Props): JSX.Element {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [recovering, setRecovering] = useState(false)
 
   const submit = async (event: FormEvent): Promise<void> => {
     event.preventDefault()
@@ -50,8 +53,21 @@ export default function LoginScreen({ onLogin }: Props): JSX.Element {
             EXIT
           </button>
         </div>
+        <button type="button" className="link-btn" onClick={() => setRecovering(true)}>
+          FORGOT ADMIN PASSWORD?
+        </button>
       </form>
       <div className="login-footer">Powered by Novatek</div>
+      {recovering && (
+        <RecoveryDialog
+          onClose={() => setRecovering(false)}
+          onDone={() => {
+            setRecovering(false)
+            setUsername('ADMIN')
+            toast.success('ADMIN password changed. Log in with the new password.')
+          }}
+        />
+      )}
     </div>
   )
 }

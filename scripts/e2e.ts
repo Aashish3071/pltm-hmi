@@ -3,6 +3,7 @@
  * an isolated profile, and saves screenshots of each screen.
  * Run with: npm run test:e2e   (screenshots land in scripts/out/e2e/)
  */
+import { DEV_RECOVERY_SECRET, responseCode } from '../src/main/services/recoveryCode'
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join, resolve } from 'path'
@@ -345,6 +346,30 @@ async function main(): Promise<void> {
   await page.locator('.modal').getByRole('button', { name: 'CANCEL' }).click()
   await page.getByRole('button', { name: 'LOGOUT' }).click()
   await page.getByPlaceholder('USER NAME').waitFor()
+
+  console.log('\nForgotten admin password')
+  await page.getByRole('button', { name: 'FORGOT ADMIN PASSWORD?' }).click()
+  await page.locator('.request-code').filter({ hasText: /^[0-9A-Z]{4}-[0-9A-Z]{4}$/ }).waitFor()
+  const requestCode = await page.locator('.request-code').innerText()
+  const machineId = await page.locator('.recovery-codes b').first().innerText()
+  check('request code and machine ID shown', /^[0-9A-Z]{4}-[0-9A-Z]{4}$/.test(requestCode) && machineId.length > 0, `(${requestCode}, ${machineId})`)
+  await shot(page, '15-recovery')
+  const dialog = page.locator('.modal')
+  await dialog.getByPlaceholder('XXXXX-XXXXX').fill('AAAAA-AAAAA')
+  await dialog.locator('input[type=password]').nth(0).fill('newadmin1')
+  await dialog.locator('input[type=password]').nth(1).fill('newadmin1')
+  await dialog.getByRole('button', { name: 'RESET PASSWORD' }).click()
+  check('a wrong response code is refused', await dialog.locator('.login-error', { hasText: 'not right' }).waitFor({ timeout: 5000 }).then(() => true, () => false))
+  const secret = process.env.PLTM_RECOVERY_SECRET || DEV_RECOVERY_SECRET
+  await dialog.getByPlaceholder('XXXXX-XXXXX').fill(responseCode(secret, requestCode, machineId).toLowerCase())
+  await dialog.getByRole('button', { name: 'RESET PASSWORD' }).click()
+  check('the support response code resets the password', await toastAppears(page, 'ADMIN password changed'))
+  await page.getByPlaceholder('PASSWORD').fill('admin')
+  await page.getByRole('button', { name: 'LOGIN' }).click()
+  check('the old password no longer works', await page.locator('.login-error').waitFor({ timeout: 5000 }).then(() => true, () => false))
+  await page.getByPlaceholder('PASSWORD').fill('newadmin1')
+  await page.getByRole('button', { name: 'LOGIN' }).click()
+  check('ADMIN logs in with the new password', await page.locator('.home').waitFor({ timeout: 5000 }).then(() => true, () => false))
 
   check('no renderer errors', errors.length === 0, errors.join(' | '))
 
