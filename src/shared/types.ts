@@ -121,6 +121,7 @@ export interface SystemInfo {
   heightCapacityMm: number
   appVersion: string
   driver: HardwareDriver
+  transport: ModbusTransport
 }
 
 export interface MachineSettings {
@@ -147,6 +148,13 @@ export type HardwareDriver = 'simulator' | 'modbus'
  * tcp:        Modbus TCP (MBAP), for gateways/PLCs that speak it natively.
  */
 export type ModbusTransport = 'rtu-serial' | 'rtu-tcp' | 'tcp'
+
+/** What to check when the machine link is down, by how it is connected. */
+export function disconnectedHint(transport: ModbusTransport | undefined): string {
+  if (transport === 'rtu-serial') return 'Check the machine power and the USB-RS485 adapter cable.'
+  if (transport === 'rtu-tcp' || transport === 'tcp') return 'Check the machine power and the Ethernet cable.'
+  return 'Check the machine power and its cable to this PC.'
+}
 
 export interface ModbusConnection {
   transport: ModbusTransport
@@ -409,7 +417,7 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   [ErrorCode.INTERNAL]: 'Unexpected error. Details were written to the application log.',
   [ErrorCode.NOT_HOMED]: 'Homing not done. Press HOMING before starting a test.',
   [ErrorCode.RESET_REQUIRED]: 'Press RESET before starting a new test cycle.',
-  [ErrorCode.HARDWARE_DISCONNECTED]: 'Machine is disconnected. Check power and the Ethernet cable.',
+  [ErrorCode.HARDWARE_DISCONNECTED]: 'Machine is disconnected. Check the machine power and its cable to this PC.',
   [ErrorCode.FAULT_ACTIVE]: 'A fault is active. Clear the fault and press RESET.',
   [ErrorCode.ALREADY_RUNNING]: 'A test is already running.',
   [ErrorCode.NOT_RUNNING]: 'No test is currently running.',

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { disconnectedHint, type ModbusTransport } from '@shared/types'
 import { api } from './api/client'
 import LoginScreen from './screens/Login/LoginScreen'
 import HomeScreen from './screens/Home/HomeScreen'
@@ -19,6 +20,15 @@ export default function App(): JSX.Element {
   const connected = useMachineStore((s) => s.connected)
 
   useEffect(() => connectMachineEvents(), [])
+
+  // The banner's advice depends on how the machine is wired (USB-RS485 or Ethernet).
+  const [transport, setTransport] = useState<ModbusTransport | undefined>()
+  useEffect(() => {
+    if (connected) return
+    void api.app.systemInfo().then((result) => {
+      if (result.ok) setTransport(result.data.transport)
+    })
+  }, [connected])
 
   const handleLogout = async (): Promise<void> => {
     await api.auth.logout()
@@ -44,7 +54,7 @@ export default function App(): JSX.Element {
       <TitleBar />
       {!connected && screen !== 'login' && (
         <div className="disconnect-banner">
-          <span>MACHINE DISCONNECTED — check power and the Ethernet cable. Retrying automatically…</span>
+          <span>MACHINE DISCONNECTED — {disconnectedHint(transport)} Retrying automatically…</span>
           <button className="btn small" onClick={reconnect} disabled={reconnecting}>
             {reconnecting ? 'CONNECTING…' : 'RECONNECT NOW'}
           </button>

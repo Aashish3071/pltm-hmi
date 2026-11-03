@@ -277,6 +277,7 @@ async function main(): Promise<void> {
   await page.getByRole('button', { name: 'DISCONNECT' }).click()
   await page.locator('.settings-footer').getByRole('button', { name: 'HOME' }).click()
   check('disconnect banner shown', await page.locator('.disconnect-banner').isVisible())
+  check('banner says what to check', /Check the machine power and the (Ethernet cable|USB-RS485 adapter cable)/.test(await page.locator('.disconnect-banner').innerText()))
   await shot(page, '13-disconnected')
   try {
     await page.locator('.disconnect-banner').waitFor({ state: 'detached', timeout: 15000 })

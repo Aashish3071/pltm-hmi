@@ -95,7 +95,8 @@ export function registerIpcHandlers(): void {
       loadCapacityN: Number(s.load_capacity_n ?? 0),
       heightCapacityMm: Number(s.height_capacity_mm ?? 0),
       appVersion: app.getVersion(),
-      driver: getHardware().driverKind
+      driver: getHardware().driverKind,
+      transport: loadHardwareConfig().connection.transport
     }
   })
 

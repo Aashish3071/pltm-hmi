@@ -7,7 +7,7 @@ import {
   type StartRunRequest,
   type TelemetryFrame
 } from '@shared/types'
-import { getHardware } from '../hardware/HardwareManager'
+import { disconnectedError, getHardware } from '../hardware/HardwareManager'
 import { modelsRepo, testRunsRepo, usersRepo } from '../db/repositories'
 import { CommandError } from '../errors'
 import { assertCalibrationAllowsTest, currentReferences } from './calibrationService'
@@ -69,7 +69,7 @@ export async function startRun(request: StartRunRequest): Promise<void> {
   const hardware = getHardware()
   const snapshot = hardware.getSnapshot()
 
-  if (!snapshot.connected) throw new CommandError(ErrorCode.HARDWARE_DISCONNECTED)
+  if (!snapshot.connected) throw disconnectedError()
   if (snapshot.mode === 'MANUAL') throw new CommandError(ErrorCode.MANUAL_MODE)
   if (FAULT_STATUSES.includes(snapshot.status)) throw new CommandError(ErrorCode.FAULT_ACTIVE)
   if (!snapshot.homed) throw new CommandError(ErrorCode.NOT_HOMED)
@@ -123,7 +123,7 @@ export async function stopRun(): Promise<void> {
 
 export async function resetMachine(): Promise<void> {
   const hardware = getHardware()
-  if (!hardware.getSnapshot().connected) throw new CommandError(ErrorCode.HARDWARE_DISCONNECTED)
+  if (!hardware.getSnapshot().connected) throw disconnectedError()
   // Resetting mid-test aborts it; the machine stops where it is.
   if (activeRunId !== null) {
     if (isMoving(hardware.getSnapshot().status)) await hardware.stop()
@@ -135,7 +135,7 @@ export async function resetMachine(): Promise<void> {
 export async function homeMachine(): Promise<void> {
   const hardware = getHardware()
   const snapshot = hardware.getSnapshot()
-  if (!snapshot.connected) throw new CommandError(ErrorCode.HARDWARE_DISCONNECTED)
+  if (!snapshot.connected) throw disconnectedError()
   if (FAULT_STATUSES.includes(snapshot.status)) throw new CommandError(ErrorCode.FAULT_ACTIVE)
   if (isMoving(snapshot.status) || snapshot.status === HardwareStatus.HALT) {
     throw new CommandError(ErrorCode.HOMING_BLOCKED)
@@ -146,7 +146,7 @@ export async function homeMachine(): Promise<void> {
 export async function setMachineMode(mode: MachineMode): Promise<void> {
   const hardware = getHardware()
   const snapshot = hardware.getSnapshot()
-  if (!snapshot.connected) throw new CommandError(ErrorCode.HARDWARE_DISCONNECTED)
+  if (!snapshot.connected) throw disconnectedError()
   if (snapshot.mode === mode) return
   if (isMoving(snapshot.status) || snapshot.status === HardwareStatus.HALT) {
     throw new CommandError(
@@ -164,7 +164,7 @@ export async function jogMachine(direction: JogDirection, active: boolean): Prom
     return
   }
   const snapshot = hardware.getSnapshot()
-  if (!snapshot.connected) throw new CommandError(ErrorCode.HARDWARE_DISCONNECTED)
+  if (!snapshot.connected) throw disconnectedError()
   if (snapshot.mode !== 'MANUAL') {
     throw new CommandError(ErrorCode.INVALID_INPUT, 'Switch to MANUAL MODE to jog the pantograph.')
   }
