@@ -1,5 +1,4 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
-import { SerialPort } from 'serialport'
 import {
   ErrorCode,
   ERROR_MESSAGES,
@@ -13,12 +12,12 @@ import {
   type CertificateDraft,
   type MachineSettings,
   type ModelConfig,
-  type SerialPortInfo,
   type SpeedSettings,
   type StartRunRequest,
   type SystemInfo
 } from '@shared/types'
 import { getHardware, loadHardwareConfig } from '../hardware/HardwareManager'
+import { listSerialPorts } from '../hardware/serialPorts'
 import type { FaultKind } from '../hardware/HardwareInterface'
 import {
   calibrationsRepo,
@@ -170,18 +169,7 @@ export function registerIpcHandlers(): void {
   handle(IPC.HARDWARE_GET_CONFIG, 'admin', () => config.getHardwareConfig())
   handle(IPC.HARDWARE_SET_CONFIG, 'admin', (input: unknown) => config.setHardwareConfig(input))
   handle(IPC.HARDWARE_TEST_CONNECTION, 'admin', (input: unknown) => config.testHardwareConfig(input))
-  handle(IPC.HARDWARE_LIST_PORTS, 'admin', async (): Promise<SerialPortInfo[]> => {
-    const ports = await SerialPort.list()
-    return ports
-      .map((p) => ({
-        path: p.path,
-        manufacturer: p.manufacturer,
-        vendorId: p.vendorId,
-        productId: p.productId,
-        chip: chipName(p.vendorId)
-      }))
-      .sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true }))
-  })
+  handle(IPC.HARDWARE_LIST_PORTS, 'admin', () => listSerialPorts())
   handle(IPC.HARDWARE_RECONNECT, 'user', async () => {
     const connected = await getHardware().tryConnect()
     if (!connected) {
@@ -265,22 +253,6 @@ export function registerIpcHandlers(): void {
     if (error) throw new CommandError(ErrorCode.INVALID_INPUT, `Could not open the certificate: ${error}`)
     return true
   })
-}
-
-/** USB-to-serial adapter families by USB vendor id. */
-function chipName(vendorId: string | undefined): string | undefined {
-  switch ((vendorId ?? '').toLowerCase()) {
-    case '0403':
-      return 'FTDI'
-    case '1a86':
-      return 'CH340'
-    case '10c4':
-      return 'CP210x'
-    case '067b':
-      return 'Prolific'
-    default:
-      return undefined
-  }
 }
 
 /** Fan hardware events out to every renderer window. */

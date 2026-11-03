@@ -390,6 +390,7 @@ export const ErrorCode = {
   DUPLICATE_NAME: 'ERR_DUPLICATE_NAME',
   NOT_AUTHORIZED: 'ERR_NOT_AUTHORIZED',
   CONNECTION_FAILED: 'ERR_CONNECTION_FAILED',
+  PORT_LIST_FAILED: 'ERR_PORT_LIST_FAILED',
   CALIBRATION_REQUIRED: 'ERR_CALIBRATION_REQUIRED',
   INTERNAL: 'ERR_INTERNAL'
 } as const
@@ -401,6 +402,8 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   [ErrorCode.DUPLICATE_NAME]: 'That name is already in use.',
   [ErrorCode.NOT_AUTHORIZED]: 'Administrator access is required for this action.',
   [ErrorCode.CONNECTION_FAILED]: 'Could not connect to the machine.',
+  [ErrorCode.PORT_LIST_FAILED]:
+    'Could not search for COM ports. Choose "Other" and type the port name, e.g. COM7.',
   [ErrorCode.CALIBRATION_REQUIRED]:
     'Load-cell calibration or its certificate is overdue. An administrator must calibrate before testing.',
   [ErrorCode.INTERNAL]: 'Unexpected error. Details were written to the application log.',
