@@ -4,13 +4,14 @@ import { api } from './api/client'
 import LoginScreen from './screens/Login/LoginScreen'
 import HomeScreen from './screens/Home/HomeScreen'
 import SettingsScreen from './screens/Settings/SettingsScreen'
+import HistoryScreen from './screens/History/HistoryScreen'
 import TitleBar from './components/TitleBar'
 import ToastStack from './components/ToastStack'
 import { connectMachineEvents, useMachineStore } from './state/machineStore'
 import { useSessionStore } from './state/sessionStore'
 import { toast } from './state/toastStore'
 
-type Screen = 'login' | 'home' | 'settings'
+type Screen = 'login' | 'home' | 'settings' | 'history'
 
 export default function App(): JSX.Element {
   const [screen, setScreen] = useState<Screen>('login')
@@ -73,9 +74,11 @@ export default function App(): JSX.Element {
           <HomeScreen
             user={user}
             onOpenSettings={() => setScreen('settings')}
+            onOpenHistory={() => setScreen('history')}
             onLogout={handleLogout}
           />
         )}
+        {screen === 'history' && user && <HistoryScreen onHome={() => setScreen('home')} />}
         {screen === 'settings' && user && (
           <SettingsScreen onHome={leaveSettings} onLogout={handleLogout} />
         )}

@@ -395,6 +395,23 @@ async function main(): Promise<void> {
   const orphan = getDb().prepare("SELECT result_status FROM test_runs WHERE part_no = 'ORPHAN'").get() as { result_status: string }
   check('run left open by a crash is closed as ABORTED', orphan?.result_status === 'ABORTED')
 
+  console.log('\nTest history search')
+  const all = testRunsRepo.search({})
+  check('history lists finished runs newest first', all.total > 0 && all.runs.every((r, i) => i === 0 || r.id < all.runs[i - 1].id))
+  check('history excludes runs still in progress', all.runs.every((r) => r.endedAt !== null))
+  const odd = testRunsRepo.create({ employeeUserId: 1, modelId: models[1].id, partNo: 'Odd%_Part' })
+  testRunsRepo.finish(odd, { upCycleSec: 1, downCycleSec: 1, maxLoadN: 10, resultStatus: 'OVERLOAD' })
+  check('Part-No search is a case-insensitive part match', testRunsRepo.search({ partNo: 'odd%_p' }).runs.map((r) => r.id).join() === String(odd))
+  check('% and _ in Part-No search are literal', testRunsRepo.search({ partNo: '%' }).runs.every((r) => (r.partNo ?? '').includes('%')))
+  check('model filter', testRunsRepo.search({ modelId: models[1].id }).runs.every((r) => r.modelName === models[1].name))
+  check('result filter', testRunsRepo.search({ resultStatus: 'OVERLOAD' }).runs.some((r) => r.id === odd))
+  const today = new Date()
+  const ymd = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
+  check('date filter includes today', testRunsRepo.search({ fromDate: ymd, toDate: ymd }).total === testRunsRepo.search({}).total)
+  check('date filter excludes other days', testRunsRepo.search({ toDate: '2000-01-01' }).total === 0)
+  const paged = testRunsRepo.search({ limit: 1, offset: 1 })
+  check('history pages', paged.runs.length === 1 && paged.runs[0].id === testRunsRepo.search({ limit: 2 }).runs[1]?.id)
+
   console.log('\nBackup and restore')
   const backups = join(profile, 'backups')
   setBackupDir(backups)

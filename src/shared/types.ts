@@ -373,6 +373,24 @@ export interface TestRunSummary {
   maxLoadN: number | null
   resultStatus: string | null
   reportPath: string | null
+  certificateNo: string | null
+}
+
+export interface TestRunQuery {
+  /** Matches anywhere in the Part-No, ignoring case. */
+  partNo?: string
+  modelId?: number
+  /** Inclusive local dates, YYYY-MM-DD. */
+  fromDate?: string
+  toDate?: string
+  resultStatus?: string
+  limit?: number
+  offset?: number
+}
+
+export interface TestRunPage {
+  runs: TestRunSummary[]
+  total: number
 }
 
 export interface StartRunRequest {
@@ -497,6 +515,7 @@ export const IPC = {
   BACKUP_PICK_RESTORE: 'backup:pick-restore',
   BACKUP_RESTORE: 'backup:restore',
 
+  REPORTS_SEARCH: 'reports:search',
   REPORTS_GENERATE: 'reports:generate',
   REPORTS_OPEN_FOLDER: 'reports:open-folder',
   REPORTS_LAST_RUN: 'reports:last-run',

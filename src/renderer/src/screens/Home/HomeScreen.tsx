@@ -22,12 +22,13 @@ import SafetyStrip from './SafetyStrip'
 interface Props {
   user: UserAccount
   onOpenSettings: () => void
+  onOpenHistory: () => void
   onLogout: () => void
 }
 
 type Result = { ok: boolean; message?: string }
 
-export default function HomeScreen({ user, onOpenSettings, onLogout }: Props): JSX.Element {
+export default function HomeScreen({ user, onOpenSettings, onOpenHistory, onLogout }: Props): JSX.Element {
   const [users, setUsers] = useState<UserAccount[]>([])
   const [models, setModels] = useState<ModelConfig[]>([])
   const [speeds, setSpeeds] = useState<SpeedSettings>({ up: 50, down: 50, jog: 50 })
@@ -230,6 +231,7 @@ export default function HomeScreen({ user, onOpenSettings, onLogout }: Props): J
           onReset={handleReset}
           onHoming={() => void run(() => api.machine.home(), 'Home position set.')}
           onReport={handleReport}
+          onHistory={onOpenHistory}
           onSettings={onOpenSettings}
           onLogout={onLogout}
           onClose={() => void api.app.quit()}

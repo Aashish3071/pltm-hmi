@@ -1,3 +1,4 @@
+import { existsSync } from 'fs'
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import {
   ErrorCode,
@@ -14,6 +15,7 @@ import {
   type ModelConfig,
   type SpeedSettings,
   type StartRunRequest,
+  type TestRunQuery,
   type SystemInfo
 } from '@shared/types'
 import { getHardware, loadHardwareConfig } from '../hardware/HardwareManager'
@@ -200,19 +202,16 @@ export function registerIpcHandlers(): void {
 
   // --- reports ------------------------------------------------------------
   handle(IPC.REPORTS_LAST_RUN, 'user', () => testRunsRepo.lastCompleted() ?? null)
-  handle(IPC.REPORTS_RUN_POINTS, 'user', () => {
-    const run = testRunsRepo.lastCompleted()
-    if (!run) throw new CommandError(ErrorCode.NO_COMPLETED_RUN)
-    return runChartData(run.id)
-  })
-  handle(IPC.REPORTS_GENERATE, 'user', async (input: { chartPng?: string }) => {
-    const run = testRunsRepo.lastCompleted()
-    if (!run) throw new CommandError(ErrorCode.NO_COMPLETED_RUN)
-    return generateReportFiles(run.id, input?.chartPng)
-  })
-  handle(IPC.REPORTS_OPEN_FOLDER, 'user', async () => {
-    const run = testRunsRepo.lastCompleted()
-    if (run?.reportPath) shell.showItemInFolder(run.reportPath)
+  handle(IPC.REPORTS_SEARCH, 'user', (query: TestRunQuery) => testRunsRepo.search(query ?? {}))
+  // Each of these takes an optional run id (from History); without one they
+  // act on the last completed run, as REPORT on the Home screen does.
+  handle(IPC.REPORTS_RUN_POINTS, 'user', (runId?: number) => runChartData(finishedRunId(runId)))
+  handle(IPC.REPORTS_GENERATE, 'user', async (input: { chartPng?: string; runId?: number }) =>
+    generateReportFiles(finishedRunId(input?.runId), input?.chartPng)
+  )
+  handle(IPC.REPORTS_OPEN_FOLDER, 'user', async (runId?: number) => {
+    const run = runId ? testRunsRepo.get(Number(runId)) : testRunsRepo.lastCompleted()
+    if (run?.reportPath && existsSync(run.reportPath)) shell.showItemInFolder(run.reportPath)
     else await shell.openPath(reportDir())
     return true
   })
@@ -293,6 +292,13 @@ export function registerIpcHandlers(): void {
     if (error) throw new CommandError(ErrorCode.INVALID_INPUT, `Could not open the certificate: ${error}`)
     return true
   })
+}
+
+/** A finished run to report on: the one asked for, else the last completed. */
+function finishedRunId(runId?: number): number {
+  const run = runId ? testRunsRepo.get(Number(runId)) : testRunsRepo.lastCompleted()
+  if (!run || !run.endedAt) throw new CommandError(ErrorCode.NO_COMPLETED_RUN)
+  return run.id
 }
 
 async function pickFolder(title: string, defaultPath: string): Promise<string | null> {

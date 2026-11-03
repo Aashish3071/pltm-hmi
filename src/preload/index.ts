@@ -25,6 +25,8 @@ import {
   type StartRunRequest,
   type SystemInfo,
   type TelemetryFrame,
+  type TestRunPage,
+  type TestRunQuery,
   type TestRunSummary,
   type UserAccount
 } from '@shared/types'
@@ -120,15 +122,17 @@ const api = {
   },
   reports: {
     lastRun: () => invoke<TestRunSummary | null>(IPC.REPORTS_LAST_RUN),
-    runPoints: () =>
+    search: (query: TestRunQuery) => invoke<TestRunPage>(IPC.REPORTS_SEARCH, query),
+    runPoints: (runId?: number) =>
       invoke<{
         run: TestRunSummary
         points: { loadN: number; heightMm: number }[]
         envelope: { loadN: number; heightMm: number }[]
         maxHeightMm: number
-      }>(IPC.REPORTS_RUN_POINTS),
-    generate: (chartPng?: string) => invoke<ReportResult>(IPC.REPORTS_GENERATE, { chartPng }),
-    openFolder: () => invoke<boolean>(IPC.REPORTS_OPEN_FOLDER)
+      }>(IPC.REPORTS_RUN_POINTS, runId),
+    generate: (chartPng?: string, runId?: number) =>
+      invoke<ReportResult>(IPC.REPORTS_GENERATE, { chartPng, runId }),
+    openFolder: (runId?: number) => invoke<boolean>(IPC.REPORTS_OPEN_FOLDER, runId)
   }
 }
 
