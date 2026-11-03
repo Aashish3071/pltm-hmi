@@ -45,10 +45,18 @@ export default function ConnectionPanel({ onApplied }: Props): JSX.Element {
   const [busy, setBusy] = useState<'test' | 'save' | null>(null)
   const [testResult, setTestResult] = useState('')
   const [manualPort, setManualPort] = useState(false)
+  const [portError, setPortError] = useState('')
 
   const loadPorts = async (): Promise<void> => {
     const result = await api.hardware.listPorts()
-    if (result.ok) setPorts(result.data)
+    if (result.ok) {
+      setPorts(result.data)
+      setPortError('')
+    } else {
+      // Shown in the panel rather than as a toast: this repeats every refresh.
+      setPorts([])
+      setPortError(result.message)
+    }
   }
 
   useEffect(() => {
@@ -185,7 +193,9 @@ export default function ConnectionPanel({ onApplied }: Props): JSX.Element {
                   }
                 }}
               >
-                {ports.length === 0 && !conn.serialPath && <option value="">No COM ports found</option>}
+                {ports.length === 0 && !conn.serialPath && (
+                  <option value="">{portError ? 'COM port search failed' : 'No COM ports found'}</option>
+                )}
                 {conn.serialPath && !ports.some((p) => p.path === conn.serialPath) && (
                   <option value={conn.serialPath}>{conn.serialPath} (not plugged in)</option>
                 )}
@@ -211,8 +221,10 @@ export default function ConnectionPanel({ onApplied }: Props): JSX.Element {
               />
             </div>
           )}
-          <div className="hint" style={{ marginTop: -2, marginBottom: 6 }}>
-            {ports.length === 0
+          <div className={portError ? 'hint warn' : 'hint'} style={{ marginTop: -2, marginBottom: 6 }}>
+            {portError
+              ? portError
+              : ports.length === 0
               ? 'No COM ports found. Plug in the USB-RS485 adapter and install its driver; this list updates by itself.'
               : `${ports.length} COM port${ports.length === 1 ? '' : 's'} found. Unplug and replug the adapter to see which one is yours.`}
           </div>

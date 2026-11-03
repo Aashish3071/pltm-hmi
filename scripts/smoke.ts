@@ -17,6 +17,7 @@ import { login } from '../src/main/services/authService'
 import { generateReport, generateReportFiles } from '../src/main/services/reportService'
 import { analyseRun } from '../src/main/services/testAnalysis'
 import { MockHardware } from '../src/main/hardware/MockHardware'
+import { listSerialPorts } from '../src/main/hardware/serialPorts'
 import {
   capture as captureCalibration,
   getStatus as calibrationStatus,
@@ -358,6 +359,24 @@ async function main(): Promise<void> {
   const nextFiles = await generateReportFiles(nextRun.id)
   check('the next run gets the next number', nextFiles.certificateNo.endsWith('/00002'), `(${nextFiles.certificateNo})`)
   console.log(`        -> ${files.pdfPath}`)
+
+  console.log('\nCOM port search')
+  const found = await listSerialPorts(async () => [
+    { path: 'COM10', manufacturer: 'wch.cn', vendorId: '1A86', productId: '7523' },
+    { path: 'COM3', manufacturer: 'FTDI', vendorId: '0403', productId: '6001' }
+  ] as never)
+  check('ports are listed in numeric order', found.map((p) => p.path).join(',') === 'COM3,COM10')
+  check('adapter chip is named', found[1].chip === 'CH340' && found[0].chip === 'FTDI')
+  try {
+    await listSerialPorts(async () => {
+      throw new Error('spawn udevadm ENOENT')
+    })
+    check('a failed port search is reported', false, '(no error thrown)')
+  } catch (error) {
+    const e = error as { code?: string; message?: string }
+    check('a failed port search is reported as PORT_LIST_FAILED', e.code === 'ERR_PORT_LIST_FAILED', JSON.stringify(e))
+    check('the message gives the reason and the workaround', /udevadm ENOENT/.test(e.message ?? '') && /Other/.test(e.message ?? ''), `(${e.message})`)
+  }
 
   console.log('\nCrash recovery')
   testRunsRepo.create({ employeeUserId: 1, modelId: models[0].id, partNo: 'ORPHAN' })

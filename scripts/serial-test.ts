@@ -214,8 +214,14 @@ async function main(): Promise<void> {
 
   hardware.stopSupervision()
   await getHardware().disconnect()
-  plcPort.close()
-  cable.kill()
+  // Wait for the native port close and socat to exit before app.exit:
+  // a serialport callback firing during shutdown aborts the process.
+  await new Promise<void>((resolve) => (plcPort.isOpen ? plcPort.close(() => resolve()) : resolve()))
+  await new Promise<void>((resolve) => {
+    if (cable.exitCode !== null || cable.signalCode !== null) return resolve()
+    cable.once('exit', () => resolve())
+    cable.kill()
+  })
   await plc.shutdown()
   closeDb()
   console.log(failures === 0 ? '\nAll serial checks passed.\n' : `\n${failures} serial check(s) failed.\n`)
