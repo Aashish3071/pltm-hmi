@@ -11,6 +11,7 @@ import { api } from '../../api/client'
 import { toast } from '../../state/toastStore'
 import GraphPanel, { loadAxisMax } from '../Home/GraphPanel'
 import AdminGate from './AdminGate'
+import BackupPanel from './BackupPanel'
 import CalibrationPanel from './CalibrationPanel'
 import ConnectionPanel from './ConnectionPanel'
 import MachinePanel from './MachinePanel'
@@ -24,7 +25,7 @@ interface Props {
   onLogout: () => void
 }
 
-type Tab = 'users' | 'machine' | 'connection' | 'calibration'
+type Tab = 'users' | 'machine' | 'connection' | 'calibration' | 'data'
 
 const NO_POINTS: { loadN: number; heightMm: number }[] = []
 
@@ -120,6 +121,9 @@ export default function SettingsScreen({ onHome, onLogout }: Props): JSX.Element
       >
         CALIBRATION
       </button>
+      <button className={tab === 'data' ? 'active' : ''} onClick={() => setTab('data')}>
+        DATA
+      </button>
     </div>
   )
 
@@ -137,14 +141,14 @@ export default function SettingsScreen({ onHome, onLogout }: Props): JSX.Element
     </div>
   )
 
-  // Calibration needs the full width for its tables.
-  if (tab === 'calibration') {
+  // Calibration and data need the full width for their tables.
+  if (tab === 'calibration' || tab === 'data') {
     return (
       <div className="settings settings-wide">
         <div className="settings-col">
           {tabBar}
           <div className="tab-body">
-            <CalibrationPanel driver={driver} />
+            {tab === 'calibration' ? <CalibrationPanel driver={driver} /> : <BackupPanel />}
           </div>
           {footer}
         </div>

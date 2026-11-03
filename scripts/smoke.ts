@@ -4,7 +4,7 @@
  * Run with: npm run smoke
  */
 import { app } from 'electron'
-import { mkdirSync, rmSync } from 'fs'
+import { existsSync as fileExists, mkdirSync, readdirSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { HardwareStatus, type TelemetryFrame } from '@shared/types'
@@ -18,6 +18,16 @@ import { generateReport, generateReportFiles } from '../src/main/services/report
 import { analyseRun } from '../src/main/services/testAnalysis'
 import { MockHardware } from '../src/main/hardware/MockHardware'
 import { listSerialPorts } from '../src/main/hardware/serialPorts'
+import {
+  createBackup,
+  getBackupStatus,
+  inspectBackup,
+  latestRestorableBackup,
+  restoreBackup,
+  setBackupDir
+} from '../src/main/services/backupService'
+import { attachCertificateFile, saveCertificate } from '../src/main/services/calibrationService'
+import { dbPath } from '../src/main/db'
 import {
   capture as captureCalibration,
   getStatus as calibrationStatus,
@@ -384,6 +394,59 @@ async function main(): Promise<void> {
   initDb()
   const orphan = getDb().prepare("SELECT result_status FROM test_runs WHERE part_no = 'ORPHAN'").get() as { result_status: string }
   check('run left open by a crash is closed as ABORTED', orphan?.result_status === 'ABORTED')
+
+  console.log('\nBackup and restore')
+  const backups = join(profile, 'backups')
+  setBackupDir(backups)
+  saveCertificate({
+    labName: 'Test Lab', accreditationNo: 'CC-1', certificateNo: 'LC-42', loadCellSerial: 'S1',
+    calibratedOn: '2026-01-01', validUntil: '2027-01-01', uncertainty: '0.1 N'
+  })
+  const scan = join(profile, 'scan.pdf')
+  writeFileSync(scan, '%PDF-1.4 test scan')
+  attachCertificateFile(scan)
+  const runsAtBackup = (getDb().prepare('SELECT COUNT(*) AS n FROM test_runs').get() as { n: number }).n
+  const first = createBackup('manual')
+  check('backup folder written with database and certificates', fileExists(join(first.path, 'pltm.db')) && readdirSync(join(first.path, 'certificates')).length === 1)
+  check('backup records its test count', first.testRuns === runsAtBackup, `(${first.testRuns} vs ${runsAtBackup})`)
+  check('backup passes inspection', inspectBackup(first.path).name === first.name)
+  for (let i = 0; i < 4; i++) createBackup('auto')
+  writeFileSync(join(profile, 'backup-settings.json'), JSON.stringify({ dir: backups, keep: 2 }))
+  createBackup('auto')
+  const status = getBackupStatus()
+  check('old automatic backups are pruned', status.backups.filter((b) => b.kind === 'auto').length === 2, `(${status.backups.filter((b) => b.kind === 'auto').length})`)
+  check('manual backups are kept', status.backups.some((b) => b.path === first.path))
+
+  const junk = join(profile, 'not-a-backup')
+  mkdirSync(junk, { recursive: true })
+  writeFileSync(join(junk, 'pltm.db'), 'this is not sqlite')
+  let rejected = ''
+  try { inspectBackup(junk) } catch (error) { rejected = (error as Error).message }
+  check('a damaged backup is refused', /not a usable backup/.test(rejected), `(${rejected})`)
+
+  testRunsRepo.create({ employeeUserId: 1, modelId: models[0].id, partNo: 'AFTER-BACKUP' })
+  settingsRepo.set('machine_id', 'CHANGED-AFTER')
+  restoreBackup(first.path)
+  initDb()
+  const runsAfter = (getDb().prepare('SELECT COUNT(*) AS n FROM test_runs').get() as { n: number }).n
+  check('restore brings back the backed-up data', runsAfter === runsAtBackup && settingsRepo.get('machine_id') !== 'CHANGED-AFTER', `(${runsAfter} runs)`)
+  const certPath = (getDb().prepare('SELECT file_path FROM load_cell_certificates WHERE file_path IS NOT NULL').get() as { file_path: string } | undefined)?.file_path ?? ''
+  check('restored certificate file points at this PC', certPath.startsWith(join(profile, 'certificates')) && fileExists(certPath), `(${certPath})`)
+  check('the data before the restore was backed up', getBackupStatus().backups.some((b) => b.kind === 'pre-restore'))
+
+  closeDb()
+  writeFileSync(dbPath(), 'garbage that is not a database')
+  for (const suffix of ['-wal', '-shm']) rmSync(dbPath() + suffix, { force: true })
+  let openError = ''
+  try { initDb() } catch (error) { openError = (error as Error).message }
+  check('a damaged database is detected at startup', openError.length > 0, `(${openError})`)
+  const latest = latestRestorableBackup()
+  check('the newest good backup is found for recovery', latest !== null)
+  if (latest) {
+    restoreBackup(latest.path)
+    initDb()
+    check('startup recovery restores a working database', usersRepo.list().length === 4)
+  }
 
   closeDb()
   console.log(failures === 0 ? '\nAll checks passed.\n' : `\n${failures} check(s) failed.\n`)

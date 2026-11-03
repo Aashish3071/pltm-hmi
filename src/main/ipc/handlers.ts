@@ -29,6 +29,7 @@ import {
 import { CommandError } from '../errors'
 import { log, logPath } from '../logger'
 import * as auth from '../services/authService'
+import * as backup from '../services/backupService'
 import * as calibration from '../services/calibrationService'
 import * as config from '../services/configService'
 import { generateReportFiles, reportDir, runChartData } from '../services/reportService'
@@ -216,6 +217,44 @@ export function registerIpcHandlers(): void {
     return true
   })
 
+  // --- backup -------------------------------------------------------------
+  handle(IPC.BACKUP_STATUS, 'admin', () => backup.getBackupStatus())
+  handle(IPC.BACKUP_NOW, 'admin', () => {
+    backup.createBackup('manual')
+    return backup.getBackupStatus()
+  })
+  handle(IPC.BACKUP_PICK_DIR, 'admin', async () => {
+    const path = await pickFolder('Choose where backups are saved', backup.backupDir())
+    if (path) {
+      backup.setBackupDir(path)
+      // Start the new location with a fresh copy.
+      backup.createBackup('manual')
+    }
+    return backup.getBackupStatus()
+  })
+  /** Lets the admin choose a backup folder (e.g. on a USB stick) and checks it. */
+  handle(IPC.BACKUP_PICK_RESTORE, 'admin', async () => {
+    const path = await pickFolder('Choose the backup folder to restore (PLTM-backup-…)', backup.backupDir())
+    return path ? backup.inspectBackup(path) : null
+  })
+  handle(IPC.BACKUP_RESTORE, 'admin', async (folder: string) => {
+    if (getActiveRunId() !== null) {
+      throw new CommandError(ErrorCode.ALREADY_RUNNING, 'Finish or stop the running test before restoring.')
+    }
+    backup.inspectBackup(String(folder ?? ''))
+    const hardware = getHardware()
+    hardware.stopSupervision()
+    await hardware.disconnect()
+    backup.stopAutoBackup()
+    backup.restoreBackup(String(folder))
+    // Restart so every service reloads settings, models and calibration.
+    setTimeout(() => {
+      app.relaunch()
+      app.exit(0)
+    }, 300)
+    return true
+  })
+
   // --- calibration ---------------------------------------------------------
   handle(IPC.CAL_STATUS, 'user', () => calibration.getStatus())
   handle(IPC.CAL_HISTORY, 'admin', () => calibrationsRepo.history())
@@ -254,6 +293,17 @@ export function registerIpcHandlers(): void {
     if (error) throw new CommandError(ErrorCode.INVALID_INPUT, `Could not open the certificate: ${error}`)
     return true
   })
+}
+
+async function pickFolder(title: string, defaultPath: string): Promise<string | null> {
+  const window = BrowserWindow.getFocusedWindow()
+  const options = {
+    title,
+    defaultPath,
+    properties: ['openDirectory', 'createDirectory'] as ('openDirectory' | 'createDirectory')[]
+  }
+  const result = window ? await dialog.showOpenDialog(window, options) : await dialog.showOpenDialog(options)
+  return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0]
 }
 
 /** Fan hardware events out to every renderer window. */

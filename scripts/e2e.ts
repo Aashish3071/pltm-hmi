@@ -3,7 +3,7 @@
  * an isolated profile, and saves screenshots of each screen.
  * Run with: npm run test:e2e   (screenshots land in scripts/out/e2e/)
  */
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join, resolve } from 'path'
 import { _electron as electron, type Page } from 'playwright-core'
@@ -57,6 +57,9 @@ async function main(): Promise<void> {
     rmSync(dir, { recursive: true, force: true })
     mkdirSync(dir, { recursive: true })
   }
+  // Startup makes an automatic backup; keep it out of the real Documents folder.
+  const backups = join(documents, 'PLTM Backups')
+  writeFileSync(join(profile, 'backup-settings.json'), JSON.stringify({ dir: backups }))
 
   // E2E_EXECUTABLE runs the suite against a packaged app instead of the build output.
   const packaged = process.env.E2E_EXECUTABLE
@@ -185,6 +188,21 @@ async function main(): Promise<void> {
   check('accredited certificate recorded', await toastAppears(page, 'Load-cell certificate recorded'))
   check('status shows calibration valid', (await page.locator('.state-badge.ok').count()) >= 2)
   await shot(page, '07d-calibration-done')
+
+  console.log('\nBackup')
+  await page.getByRole('button', { name: 'DATA', exact: true }).click()
+  await page.locator('.backup-panel').waitFor()
+  check('startup made an automatic backup', (await page.locator('.backup-table tbody tr', { hasText: 'Automatic' }).count()) === 1)
+  check('backup folder shown', (await page.locator('.backup-dir').innerText()).includes('PLTM Backups'))
+  await page.getByRole('button', { name: 'BACK UP NOW' }).click()
+  check('manual backup saved', await toastAppears(page, 'Backup saved'))
+  check('backup listed with its test count', (await page.locator('.backup-table tbody tr', { hasText: 'Manual' }).count()) === 1)
+  await page.locator('.backup-table tbody tr', { hasText: 'Manual' }).getByRole('button', { name: 'RESTORE' }).click()
+  check('restore asks for confirmation', await page.locator('.modal', { hasText: 'RESTORE BACKUP?' }).isVisible())
+  await shot(page, '07e-backup-restore-confirm')
+  await page.locator('.modal').getByRole('button', { name: 'CANCEL' }).click()
+  check('cancel leaves the data alone', !(await page.locator('.modal').isVisible()))
+  await shot(page, '07f-backup')
 
   await page.locator('.settings-footer').getByRole('button', { name: 'HOME' }).click()
   await page.locator('.home').waitFor()

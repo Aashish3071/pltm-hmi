@@ -1,6 +1,8 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import {
   IPC,
+  type BackupInfo,
+  type BackupStatus,
   type Calibration,
   type CalibrationCapture,
   type CalibrationDraft,
@@ -108,6 +110,13 @@ const api = {
       invoke<CalibrationStatus>(IPC.CERT_SAVE, draft),
     attachCertificate: () => invoke<CalibrationStatus>(IPC.CERT_ATTACH),
     openCertificate: () => invoke<boolean>(IPC.CERT_OPEN)
+  },
+  backup: {
+    status: () => invoke<BackupStatus>(IPC.BACKUP_STATUS),
+    now: () => invoke<BackupStatus>(IPC.BACKUP_NOW),
+    pickDir: () => invoke<BackupStatus>(IPC.BACKUP_PICK_DIR),
+    pickRestore: () => invoke<BackupInfo | null>(IPC.BACKUP_PICK_RESTORE),
+    restore: (folder: string) => invoke<boolean>(IPC.BACKUP_RESTORE, folder)
   },
   reports: {
     lastRun: () => invoke<TestRunSummary | null>(IPC.REPORTS_LAST_RUN),

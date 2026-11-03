@@ -12,18 +12,37 @@ export function getDb(): Database {
   return db
 }
 
+/** The live database file. */
+export function dbPath(): string {
+  return join(app.getPath('userData'), 'pltm.db')
+}
+
+export function isDbOpen(): boolean {
+  return db !== null
+}
+
 export function initDb(): Database {
-  const file = join(app.getPath('userData'), 'pltm.db')
-  db = new Database(file)
-  db.pragma('journal_mode = WAL')
-  db.pragma('foreign_keys = ON')
-  migrate(db)
-  seed(db)
-  // No run can be in progress at startup; anything still open was cut short by
-  // a crash or power loss.
-  db.prepare(
-    "UPDATE test_runs SET ended_at = datetime('now'), result_status = 'ABORTED' WHERE ended_at IS NULL"
-  ).run()
+  const opened = new Database(dbPath())
+  try {
+    opened.pragma('journal_mode = WAL')
+    opened.pragma('foreign_keys = ON')
+    // A damaged file often opens but fails its first real read.
+    const integrity = opened.pragma('quick_check', { simple: true })
+    if (integrity !== 'ok') throw new Error(`Database integrity check failed: ${String(integrity)}`)
+    migrate(opened)
+    seed(opened)
+    // No run can be in progress at startup; anything still open was cut short by
+    // a crash or power loss.
+    opened
+      .prepare(
+        "UPDATE test_runs SET ended_at = datetime('now'), result_status = 'ABORTED' WHERE ended_at IS NULL"
+      )
+      .run()
+  } catch (error) {
+    opened.close()
+    throw error
+  }
+  db = opened
   return db
 }
 

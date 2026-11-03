@@ -6,7 +6,8 @@ import { closeDb, initDb } from './db'
 import { getHardware, initHardware } from './hardware/HardwareManager'
 import { broadcast, onRunStatusChange, registerIpcHandlers } from './ipc/handlers'
 import { log } from './logger'
-import { abortActiveRun, recordCycle, recordTelemetry } from './services/testRunService'
+import { latestRestorableBackup, restoreBackup, startAutoBackup, stopAutoBackup } from './services/backupService'
+import { abortActiveRun, getActiveRunId, recordCycle, recordTelemetry } from './services/testRunService'
 
 // Two instances would contend for the database and the machine's COM port.
 if (!app.requestSingleInstanceLock()) {
@@ -82,6 +83,52 @@ function wireHardwareEvents(): void {
   })
 }
 
+/**
+ * Opens the database. If it is damaged, offers to restore the newest good
+ * backup instead of leaving the machine unusable. Returns false to quit.
+ */
+function openDatabaseOrRecover(): boolean {
+  try {
+    initDb()
+    return true
+  } catch (error) {
+    log.error('Database failed to open', error)
+    const reason = error instanceof Error ? error.message : String(error)
+    const backup = latestRestorableBackup()
+    if (!backup) {
+      dialog.showErrorBox(
+        'PLTM HMI cannot start',
+        `The local database could not be opened, and no backup was found to restore.\n\n${reason}`
+      )
+      return false
+    }
+    const when = new Date(backup.createdAt).toLocaleString()
+    const choice = dialog.showMessageBoxSync({
+      type: 'error',
+      title: 'PLTM HMI cannot start',
+      message: 'The local database could not be opened.',
+      detail:
+        `${reason}\n\nThe newest backup is from ${when}` +
+        (backup.testRuns !== null ? ` (${backup.testRuns} tests)` : '') +
+        `.\nRestoring it replaces the damaged data; tests made after the backup are lost.\n\n${backup.path}`,
+      buttons: ['Restore this backup', 'Quit'],
+      defaultId: 0,
+      cancelId: 1
+    })
+    if (choice !== 0) return false
+    try {
+      restoreBackup(backup.path)
+      initDb()
+      log.info(`Recovered from backup ${backup.path} at startup`)
+      return true
+    } catch (restoreError) {
+      log.error('Startup restore failed', restoreError)
+      dialog.showErrorBox('Restore failed', String(restoreError instanceof Error ? restoreError.message : restoreError))
+      return false
+    }
+  }
+}
+
 function bootstrap(): void {
   process.on('uncaughtException', (error) => log.error('Uncaught exception', error))
   process.on('unhandledRejection', (reason) => log.error('Unhandled rejection', reason))
@@ -90,14 +137,7 @@ function bootstrap(): void {
     electronApp.setAppUserModelId('com.novatek.pltm')
     app.on('browser-window-created', (_, window) => optimizer.watchWindowShortcuts(window))
 
-    try {
-      initDb()
-    } catch (error) {
-      log.error('Database failed to open', error)
-      dialog.showErrorBox(
-        'PLTM HMI cannot start',
-        `The local database could not be opened.\n\n${error instanceof Error ? error.message : String(error)}`
-      )
+    if (!openDatabaseOrRecover()) {
       app.exit(1)
       return
     }
@@ -110,6 +150,7 @@ function bootstrap(): void {
     // supervisor keeps retrying.
     await hardware.tryConnect()
     hardware.startSupervision()
+    startAutoBackup(() => getActiveRunId() !== null)
 
     createWindow()
 
@@ -129,6 +170,7 @@ function bootstrap(): void {
     event.preventDefault()
     void (async () => {
       try {
+        stopAutoBackup()
         await abortActiveRun()
         const hardware = getHardware()
         hardware.stopSupervision()

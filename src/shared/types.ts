@@ -400,6 +400,7 @@ export const ErrorCode = {
   CONNECTION_FAILED: 'ERR_CONNECTION_FAILED',
   PORT_LIST_FAILED: 'ERR_PORT_LIST_FAILED',
   CALIBRATION_REQUIRED: 'ERR_CALIBRATION_REQUIRED',
+  BACKUP_FAILED: 'ERR_BACKUP_FAILED',
   INTERNAL: 'ERR_INTERNAL'
 } as const
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode]
@@ -414,6 +415,7 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
     'Could not search for COM ports. Choose "Other" and type the port name, e.g. COM7.',
   [ErrorCode.CALIBRATION_REQUIRED]:
     'Load-cell calibration or its certificate is overdue. An administrator must calibrate before testing.',
+  [ErrorCode.BACKUP_FAILED]: 'The backup could not be made. Check the backup folder is reachable and has space.',
   [ErrorCode.INTERNAL]: 'Unexpected error. Details were written to the application log.',
   [ErrorCode.NOT_HOMED]: 'Homing not done. Press HOMING before starting a test.',
   [ErrorCode.RESET_REQUIRED]: 'Press RESET before starting a new test cycle.',
@@ -425,6 +427,27 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   [ErrorCode.NO_MODEL]: 'Select a model and press OK before starting a test.',
   [ErrorCode.INVALID_CREDENTIALS]: 'Invalid username or password.',
   [ErrorCode.NO_COMPLETED_RUN]: 'No completed test run available to report.'
+}
+
+export type BackupKind = 'auto' | 'manual' | 'pre-restore'
+
+/** One backup folder: the database plus the attached certificate files. */
+export interface BackupInfo {
+  name: string
+  path: string
+  createdAt: string
+  kind: BackupKind
+  sizeBytes: number
+  testRuns: number | null
+}
+
+export interface BackupStatus {
+  dir: string
+  /** Automatic backups kept; older automatic ones are deleted. */
+  keep: number
+  lastBackupAt: string | null
+  lastError: string | null
+  backups: BackupInfo[]
 }
 
 /** Uniform result shape for every invoke-style IPC call. */
@@ -467,6 +490,12 @@ export const IPC = {
   MACHINE_SET_MODE: 'machine:set-mode',
   MACHINE_JOG: 'machine:jog',
   MACHINE_FORCE_FAULT: 'machine:force-fault',
+
+  BACKUP_STATUS: 'backup:status',
+  BACKUP_NOW: 'backup:now',
+  BACKUP_PICK_DIR: 'backup:pick-dir',
+  BACKUP_PICK_RESTORE: 'backup:pick-restore',
+  BACKUP_RESTORE: 'backup:restore',
 
   REPORTS_GENERATE: 'reports:generate',
   REPORTS_OPEN_FOLDER: 'reports:open-folder',
