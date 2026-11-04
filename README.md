@@ -52,7 +52,7 @@ Connection settings are in **SETTINGS → CONNECTION** (admin only).
 | Ethernet gateway, transparent mode | PC on the gateway's address range, e.g. `192.168.0.x` | Modbus RTU over TCP (gateway) |
 | Ethernet gateway, Modbus TCP mode | PC on the gateway's address range | Modbus TCP |
 
-> **The register map shipped with the software is a placeholder.** Enter the real PLC addresses from the PLC programmer before switching the driver from *Simulator* to *Modbus*. **TEST CONNECTION** only reads from the machine, so it is safe for checking addresses.
+> **Controller:** the Arduino controller firmware in [`firmware/`](firmware/README.md) uses the shipped register map as is. With any other PLC, enter its addresses from the PLC programmer before switching the driver from *Simulator* to *Modbus*. **TEST CONNECTION** only reads from the machine, so it is safe for checking addresses.
 
 The full step-by-step commissioning procedure, register map reference and troubleshooting are in the *PLTM HMI Installation & Commissioning Guide* supplied with the software.
 
@@ -84,10 +84,11 @@ npm run typecheck
 npm run smoke        # simulator, database, guard rails, reports
 npm run test:modbus  # real driver vs a simulated PLC: RTU over TCP, Modbus TCP, link loss
 npm run test:serial  # real driver over a virtual COM port (needs socat: brew install socat)
+npm run test:firmware # the Arduino firmware's logic, built for this PC, driven by the real driver
 npm run test:e2e     # clicks through the built app with Playwright; screenshots in scripts/out/e2e
 ```
 
-The serial suite is skipped automatically where `socat` is not available (e.g. Windows).
+The serial suite is skipped automatically where `socat` is not available, and the firmware suite on Windows (it needs `g++` or `clang++`).
 
 ### Building the Windows installer
 
@@ -128,5 +129,6 @@ The secret is compiled into the installer from the `PLTM_RECOVERY_SECRET` reposi
 | `src/preload/` | The typed `window.pltm` API exposed to the UI |
 | `src/renderer/` | React UI: Login, Home, History, Settings screens |
 | `src/shared/types.ts` | Types, statuses, error codes and IPC channel names shared by both sides |
+| `firmware/` | Arduino controller firmware (Modbus slave, motion, safety functions) and its host simulator |
 | `scripts/` | Test suites, fake PLC, icon generator, build hooks |
 | `resources/` | App icon (`icon.png`, `icon.ico`) |
