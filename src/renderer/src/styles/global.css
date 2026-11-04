@@ -439,7 +439,7 @@ select:focus {
   border-radius: 5px;
   padding: 10px;
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 9px;
 }
 
@@ -562,6 +562,15 @@ select:focus {
   flex-direction: column;
   gap: 8px;
   align-items: center;
+}
+
+.modal.wide {
+  width: 460px;
+}
+
+.modal .modal-inner.left {
+  align-items: stretch;
+  font-size: 13px;
 }
 
 .modal .modal-inner input {
@@ -1030,4 +1039,169 @@ select:focus {
   padding: 4px 6px;
   border: 1px solid var(--field-border);
   border-radius: 2px;
+}
+
+.backup-dir {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  word-break: break-all;
+  background: #fff;
+  border: 1px solid var(--field-border);
+  border-radius: 3px;
+  padding: 4px 6px;
+}
+
+.backup-table td {
+  vertical-align: middle;
+}
+
+/* --- Test history ------------------------------------------------------ */
+.history {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(560px, 1.1fr);
+  gap: 10px;
+  height: 100%;
+  min-height: 0;
+}
+
+.history-left {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+
+.history-left .graph-panel {
+  flex: 1;
+  min-height: 0;
+}
+
+.history-right {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+
+.filter-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px 10px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.filter-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.filter-grid input,
+.filter-grid select {
+  width: 100%;
+  min-width: 0;
+}
+
+.filter-actions {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.history-list {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.history-count {
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.history-table-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: #fff;
+}
+
+.history-table th {
+  position: sticky;
+  top: 0;
+}
+
+.history-table tbody tr {
+  cursor: pointer;
+}
+
+.history-table tbody tr:hover {
+  background: #fff4e3;
+}
+
+.history-table tbody tr.selected {
+  background: #ffe08a;
+}
+
+.history-table .fit-pass {
+  color: #1f7a32;
+  font-weight: 700;
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 3px 12px;
+  font-size: 12px;
+}
+
+.history-footer {
+  display: flex;
+  gap: 8px;
+}
+
+/* --- Admin password recovery ------------------------------------------- */
+.link-btn {
+  background: none;
+  border: none;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  text-decoration: underline;
+  cursor: pointer;
+  opacity: 0.85;
+}
+
+.modal-inner.recovery label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.recovery-codes {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 14px;
+  align-items: baseline;
+  background: #fff;
+  border-radius: 4px;
+  padding: 8px 12px;
+  font-size: 12px;
+}
+
+.recovery-codes b {
+  font-size: 16px;
+  letter-spacing: 1px;
+}
+
+.recovery-codes .request-code {
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 22px;
+  letter-spacing: 3px;
 }

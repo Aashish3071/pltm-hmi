@@ -15,7 +15,7 @@ import {
 } from '@shared/types'
 import { calibrationsRepo, loadCellCertificatesRepo, settingsRepo } from '../db/repositories'
 import { CommandError } from '../errors'
-import { getHardware } from '../hardware/HardwareManager'
+import { disconnectedError, getHardware } from '../hardware/HardwareManager'
 import { log } from '../logger'
 
 /** A due date this close counts as "due soon". */
@@ -151,7 +151,7 @@ export function currentReferences(): { calibrationId: number | null; loadCellCer
 export function capture(durationMs = DEFAULT_CAPTURE_MS): Promise<CalibrationCapture> {
   const hardware = getHardware()
   const snapshot = hardware.getSnapshot()
-  if (!snapshot.connected) throw new CommandError(ErrorCode.HARDWARE_DISCONNECTED)
+  if (!snapshot.connected) throw disconnectedError()
   if (snapshot.phase !== 'idle') throw invalid('Stop the machine before capturing a calibration point.')
   const window = Math.min(Math.max(Number(durationMs) || DEFAULT_CAPTURE_MS, 500), 10000)
 

@@ -121,6 +121,7 @@ export interface SystemInfo {
   heightCapacityMm: number
   appVersion: string
   driver: HardwareDriver
+  transport: ModbusTransport
 }
 
 export interface MachineSettings {
@@ -147,6 +148,13 @@ export type HardwareDriver = 'simulator' | 'modbus'
  * tcp:        Modbus TCP (MBAP), for gateways/PLCs that speak it natively.
  */
 export type ModbusTransport = 'rtu-serial' | 'rtu-tcp' | 'tcp'
+
+/** What to check when the machine link is down, by how it is connected. */
+export function disconnectedHint(transport: ModbusTransport | undefined): string {
+  if (transport === 'rtu-serial') return 'Check the machine power and the USB-RS485 adapter cable.'
+  if (transport === 'rtu-tcp' || transport === 'tcp') return 'Check the machine power and the Ethernet cable.'
+  return 'Check the machine power and its cable to this PC.'
+}
 
 export interface ModbusConnection {
   transport: ModbusTransport
@@ -365,6 +373,24 @@ export interface TestRunSummary {
   maxLoadN: number | null
   resultStatus: string | null
   reportPath: string | null
+  certificateNo: string | null
+}
+
+export interface TestRunQuery {
+  /** Matches anywhere in the Part-No, ignoring case. */
+  partNo?: string
+  modelId?: number
+  /** Inclusive local dates, YYYY-MM-DD. */
+  fromDate?: string
+  toDate?: string
+  resultStatus?: string
+  limit?: number
+  offset?: number
+}
+
+export interface TestRunPage {
+  runs: TestRunSummary[]
+  total: number
 }
 
 export interface StartRunRequest {
@@ -392,6 +418,7 @@ export const ErrorCode = {
   CONNECTION_FAILED: 'ERR_CONNECTION_FAILED',
   PORT_LIST_FAILED: 'ERR_PORT_LIST_FAILED',
   CALIBRATION_REQUIRED: 'ERR_CALIBRATION_REQUIRED',
+  BACKUP_FAILED: 'ERR_BACKUP_FAILED',
   INTERNAL: 'ERR_INTERNAL'
 } as const
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode]
@@ -406,10 +433,11 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
     'Could not search for COM ports. Choose "Other" and type the port name, e.g. COM7.',
   [ErrorCode.CALIBRATION_REQUIRED]:
     'Load-cell calibration or its certificate is overdue. An administrator must calibrate before testing.',
+  [ErrorCode.BACKUP_FAILED]: 'The backup could not be made. Check the backup folder is reachable and has space.',
   [ErrorCode.INTERNAL]: 'Unexpected error. Details were written to the application log.',
   [ErrorCode.NOT_HOMED]: 'Homing not done. Press HOMING before starting a test.',
   [ErrorCode.RESET_REQUIRED]: 'Press RESET before starting a new test cycle.',
-  [ErrorCode.HARDWARE_DISCONNECTED]: 'Machine is disconnected. Check power and the Ethernet cable.',
+  [ErrorCode.HARDWARE_DISCONNECTED]: 'Machine is disconnected. Check the machine power and its cable to this PC.',
   [ErrorCode.FAULT_ACTIVE]: 'A fault is active. Clear the fault and press RESET.',
   [ErrorCode.ALREADY_RUNNING]: 'A test is already running.',
   [ErrorCode.NOT_RUNNING]: 'No test is currently running.',
@@ -417,6 +445,34 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   [ErrorCode.NO_MODEL]: 'Select a model and press OK before starting a test.',
   [ErrorCode.INVALID_CREDENTIALS]: 'Invalid username or password.',
   [ErrorCode.NO_COMPLETED_RUN]: 'No completed test run available to report.'
+}
+
+/** Shown on the login screen when the ADMIN password is forgotten. */
+export interface RecoveryRequest {
+  requestCode: string
+  machineId: string
+  expiresAt: string
+}
+
+export type BackupKind = 'auto' | 'manual' | 'pre-restore'
+
+/** One backup folder: the database plus the attached certificate files. */
+export interface BackupInfo {
+  name: string
+  path: string
+  createdAt: string
+  kind: BackupKind
+  sizeBytes: number
+  testRuns: number | null
+}
+
+export interface BackupStatus {
+  dir: string
+  /** Automatic backups kept; older automatic ones are deleted. */
+  keep: number
+  lastBackupAt: string | null
+  lastError: string | null
+  backups: BackupInfo[]
 }
 
 /** Uniform result shape for every invoke-style IPC call. */
@@ -460,6 +516,16 @@ export const IPC = {
   MACHINE_JOG: 'machine:jog',
   MACHINE_FORCE_FAULT: 'machine:force-fault',
 
+  BACKUP_STATUS: 'backup:status',
+  BACKUP_NOW: 'backup:now',
+  BACKUP_PICK_DIR: 'backup:pick-dir',
+  BACKUP_PICK_RESTORE: 'backup:pick-restore',
+  BACKUP_RESTORE: 'backup:restore',
+
+  AUTH_RECOVERY_REQUEST: 'auth:recovery-request',
+  AUTH_RECOVERY_COMPLETE: 'auth:recovery-complete',
+
+  REPORTS_SEARCH: 'reports:search',
   REPORTS_GENERATE: 'reports:generate',
   REPORTS_OPEN_FOLDER: 'reports:open-folder',
   REPORTS_LAST_RUN: 'reports:last-run',

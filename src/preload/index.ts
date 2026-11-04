@@ -1,6 +1,8 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import {
   IPC,
+  type BackupInfo,
+  type BackupStatus,
   type Calibration,
   type CalibrationCapture,
   type CalibrationDraft,
@@ -17,12 +19,15 @@ import {
   type MachineMode,
   type MachineSettings,
   type ModelConfig,
+  type RecoveryRequest,
   type ReportResult,
   type SerialPortInfo,
   type SpeedSettings,
   type StartRunRequest,
   type SystemInfo,
   type TelemetryFrame,
+  type TestRunPage,
+  type TestRunQuery,
   type TestRunSummary,
   type UserAccount
 } from '@shared/types'
@@ -47,7 +52,10 @@ const api = {
       invoke<UserAccount>(IPC.AUTH_LOGIN, { username, password }),
     logout: () => invoke<boolean>(IPC.AUTH_LOGOUT),
     adminCheck: (password: string) => invoke<boolean>(IPC.AUTH_ADMIN_CHECK, password),
-    adminLock: () => invoke<boolean>(IPC.AUTH_ADMIN_LOCK)
+    adminLock: () => invoke<boolean>(IPC.AUTH_ADMIN_LOCK),
+    recoveryRequest: () => invoke<RecoveryRequest>(IPC.AUTH_RECOVERY_REQUEST),
+    recoveryComplete: (response: string, password: string) =>
+      invoke<boolean>(IPC.AUTH_RECOVERY_COMPLETE, { response, password })
   },
   users: {
     list: () => invoke<UserAccount[]>(IPC.USERS_LIST),
@@ -109,17 +117,26 @@ const api = {
     attachCertificate: () => invoke<CalibrationStatus>(IPC.CERT_ATTACH),
     openCertificate: () => invoke<boolean>(IPC.CERT_OPEN)
   },
+  backup: {
+    status: () => invoke<BackupStatus>(IPC.BACKUP_STATUS),
+    now: () => invoke<BackupStatus>(IPC.BACKUP_NOW),
+    pickDir: () => invoke<BackupStatus>(IPC.BACKUP_PICK_DIR),
+    pickRestore: () => invoke<BackupInfo | null>(IPC.BACKUP_PICK_RESTORE),
+    restore: (folder: string) => invoke<boolean>(IPC.BACKUP_RESTORE, folder)
+  },
   reports: {
     lastRun: () => invoke<TestRunSummary | null>(IPC.REPORTS_LAST_RUN),
-    runPoints: () =>
+    search: (query: TestRunQuery) => invoke<TestRunPage>(IPC.REPORTS_SEARCH, query),
+    runPoints: (runId?: number) =>
       invoke<{
         run: TestRunSummary
         points: { loadN: number; heightMm: number }[]
         envelope: { loadN: number; heightMm: number }[]
         maxHeightMm: number
-      }>(IPC.REPORTS_RUN_POINTS),
-    generate: (chartPng?: string) => invoke<ReportResult>(IPC.REPORTS_GENERATE, { chartPng }),
-    openFolder: () => invoke<boolean>(IPC.REPORTS_OPEN_FOLDER)
+      }>(IPC.REPORTS_RUN_POINTS, runId),
+    generate: (chartPng?: string, runId?: number) =>
+      invoke<ReportResult>(IPC.REPORTS_GENERATE, { chartPng, runId }),
+    openFolder: (runId?: number) => invoke<boolean>(IPC.REPORTS_OPEN_FOLDER, runId)
   }
 }
 

@@ -11,6 +11,7 @@ interface Props {
   onReset: () => void
   onHoming: () => void
   onReport: () => void
+  onHistory: () => void
   onSettings: () => void
   onLogout: () => void
   onClose: () => void
@@ -33,6 +34,9 @@ export default function OperatingButtons(props: Props): JSX.Element {
       </button>
       <button className="op-btn" onClick={props.onReport} disabled={!props.canReport}>
         <span className="icon">&#128190;</span> REPORT
+      </button>
+      <button className="op-btn" onClick={props.onHistory}>
+        <span className="icon">&#128203;</span> HISTORY
       </button>
       <button className="op-btn" onClick={props.onSettings}>
         <span className="icon">&#9881;</span> SETTINGS

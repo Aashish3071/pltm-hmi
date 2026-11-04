@@ -1,29 +1,48 @@
 import { join } from 'path'
 import { app } from 'electron'
-import Database from 'better-sqlite3'
+import { Database } from './sqlite'
 import bcrypt from 'bcryptjs'
 import { MIGRATIONS } from './schema'
 import { DEFAULT_CONNECTION, DEFAULT_REGISTER_MAP } from '../hardware/config'
 
-let db: Database.Database | null = null
+let db: Database | null = null
 
-export function getDb(): Database.Database {
+export function getDb(): Database {
   if (!db) throw new Error('Database not initialised — call initDb() first')
   return db
 }
 
-export function initDb(): Database.Database {
-  const file = join(app.getPath('userData'), 'pltm.db')
-  db = new Database(file)
-  db.pragma('journal_mode = WAL')
-  db.pragma('foreign_keys = ON')
-  migrate(db)
-  seed(db)
-  // No run can be in progress at startup; anything still open was cut short by
-  // a crash or power loss.
-  db.prepare(
-    "UPDATE test_runs SET ended_at = datetime('now'), result_status = 'ABORTED' WHERE ended_at IS NULL"
-  ).run()
+/** The live database file. */
+export function dbPath(): string {
+  return join(app.getPath('userData'), 'pltm.db')
+}
+
+export function isDbOpen(): boolean {
+  return db !== null
+}
+
+export function initDb(): Database {
+  const opened = new Database(dbPath())
+  try {
+    opened.pragma('journal_mode = WAL')
+    opened.pragma('foreign_keys = ON')
+    // A damaged file often opens but fails its first real read.
+    const integrity = opened.pragma('quick_check', { simple: true })
+    if (integrity !== 'ok') throw new Error(`Database integrity check failed: ${String(integrity)}`)
+    migrate(opened)
+    seed(opened)
+    // No run can be in progress at startup; anything still open was cut short by
+    // a crash or power loss.
+    opened
+      .prepare(
+        "UPDATE test_runs SET ended_at = datetime('now'), result_status = 'ABORTED' WHERE ended_at IS NULL"
+      )
+      .run()
+  } catch (error) {
+    opened.close()
+    throw error
+  }
+  db = opened
   return db
 }
 
@@ -32,7 +51,7 @@ export function closeDb(): void {
   db = null
 }
 
-function migrate(database: Database.Database): void {
+function migrate(database: Database): void {
   const current = database.pragma('user_version', { simple: true }) as number
   for (let version = current; version < MIGRATIONS.length; version++) {
     database.transaction(() => {
@@ -151,7 +170,7 @@ const DEFAULT_USERS: { slot: string; role: 'admin' | 'operator'; password: strin
   { slot: 'OPERATOR3', role: 'operator', password: 'operator3' }
 ]
 
-function seed(database: Database.Database): void {
+function seed(database: Database): void {
   const insertSetting = database.prepare(
     'INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)'
   )

@@ -1,3 +1,4 @@
+import { existsSync } from 'fs'
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import {
   ErrorCode,
@@ -14,6 +15,7 @@ import {
   type ModelConfig,
   type SpeedSettings,
   type StartRunRequest,
+  type TestRunQuery,
   type SystemInfo
 } from '@shared/types'
 import { getHardware, loadHardwareConfig } from '../hardware/HardwareManager'
@@ -29,6 +31,8 @@ import {
 import { CommandError } from '../errors'
 import { log, logPath } from '../logger'
 import * as auth from '../services/authService'
+import * as backup from '../services/backupService'
+import * as recovery from '../services/recoveryService'
 import * as calibration from '../services/calibrationService'
 import * as config from '../services/configService'
 import { generateReportFiles, reportDir, runChartData } from '../services/reportService'
@@ -95,7 +99,8 @@ export function registerIpcHandlers(): void {
       loadCapacityN: Number(s.load_capacity_n ?? 0),
       heightCapacityMm: Number(s.height_capacity_mm ?? 0),
       appVersion: app.getVersion(),
-      driver: getHardware().driverKind
+      driver: getHardware().driverKind,
+      transport: loadHardwareConfig().connection.transport
     }
   })
 
@@ -116,6 +121,12 @@ export function registerIpcHandlers(): void {
   })
   handle(IPC.AUTH_ADMIN_CHECK, 'user', (password: string) => {
     if (!auth.unlockAdmin(password)) throw new CommandError(ErrorCode.INVALID_CREDENTIALS)
+    return true
+  })
+  // Forgotten ADMIN password, from the login screen (no session).
+  handle(IPC.AUTH_RECOVERY_REQUEST, 'public', () => recovery.getRecoveryRequest())
+  handle(IPC.AUTH_RECOVERY_COMPLETE, 'public', (input: { response: string; password: string }) => {
+    recovery.completeRecovery(String(input?.response ?? ''), String(input?.password ?? ''))
     return true
   })
   handle(IPC.AUTH_ADMIN_LOCK, 'public', () => {
@@ -198,20 +209,55 @@ export function registerIpcHandlers(): void {
 
   // --- reports ------------------------------------------------------------
   handle(IPC.REPORTS_LAST_RUN, 'user', () => testRunsRepo.lastCompleted() ?? null)
-  handle(IPC.REPORTS_RUN_POINTS, 'user', () => {
-    const run = testRunsRepo.lastCompleted()
-    if (!run) throw new CommandError(ErrorCode.NO_COMPLETED_RUN)
-    return runChartData(run.id)
-  })
-  handle(IPC.REPORTS_GENERATE, 'user', async (input: { chartPng?: string }) => {
-    const run = testRunsRepo.lastCompleted()
-    if (!run) throw new CommandError(ErrorCode.NO_COMPLETED_RUN)
-    return generateReportFiles(run.id, input?.chartPng)
-  })
-  handle(IPC.REPORTS_OPEN_FOLDER, 'user', async () => {
-    const run = testRunsRepo.lastCompleted()
-    if (run?.reportPath) shell.showItemInFolder(run.reportPath)
+  handle(IPC.REPORTS_SEARCH, 'user', (query: TestRunQuery) => testRunsRepo.search(query ?? {}))
+  // Each of these takes an optional run id (from History); without one they
+  // act on the last completed run, as REPORT on the Home screen does.
+  handle(IPC.REPORTS_RUN_POINTS, 'user', (runId?: number) => runChartData(finishedRunId(runId)))
+  handle(IPC.REPORTS_GENERATE, 'user', async (input: { chartPng?: string; runId?: number }) =>
+    generateReportFiles(finishedRunId(input?.runId), input?.chartPng)
+  )
+  handle(IPC.REPORTS_OPEN_FOLDER, 'user', async (runId?: number) => {
+    const run = runId ? testRunsRepo.get(Number(runId)) : testRunsRepo.lastCompleted()
+    if (run?.reportPath && existsSync(run.reportPath)) shell.showItemInFolder(run.reportPath)
     else await shell.openPath(reportDir())
+    return true
+  })
+
+  // --- backup -------------------------------------------------------------
+  handle(IPC.BACKUP_STATUS, 'admin', () => backup.getBackupStatus())
+  handle(IPC.BACKUP_NOW, 'admin', () => {
+    backup.createBackup('manual')
+    return backup.getBackupStatus()
+  })
+  handle(IPC.BACKUP_PICK_DIR, 'admin', async () => {
+    const path = await pickFolder('Choose where backups are saved', backup.backupDir())
+    if (path) {
+      backup.setBackupDir(path)
+      // Start the new location with a fresh copy.
+      backup.createBackup('manual')
+    }
+    return backup.getBackupStatus()
+  })
+  /** Lets the admin choose a backup folder (e.g. on a USB stick) and checks it. */
+  handle(IPC.BACKUP_PICK_RESTORE, 'admin', async () => {
+    const path = await pickFolder('Choose the backup folder to restore (PLTM-backup-…)', backup.backupDir())
+    return path ? backup.inspectBackup(path) : null
+  })
+  handle(IPC.BACKUP_RESTORE, 'admin', async (folder: string) => {
+    if (getActiveRunId() !== null) {
+      throw new CommandError(ErrorCode.ALREADY_RUNNING, 'Finish or stop the running test before restoring.')
+    }
+    backup.inspectBackup(String(folder ?? ''))
+    const hardware = getHardware()
+    hardware.stopSupervision()
+    await hardware.disconnect()
+    backup.stopAutoBackup()
+    backup.restoreBackup(String(folder))
+    // Restart so every service reloads settings, models and calibration.
+    setTimeout(() => {
+      app.relaunch()
+      app.exit(0)
+    }, 300)
     return true
   })
 
@@ -253,6 +299,24 @@ export function registerIpcHandlers(): void {
     if (error) throw new CommandError(ErrorCode.INVALID_INPUT, `Could not open the certificate: ${error}`)
     return true
   })
+}
+
+/** A finished run to report on: the one asked for, else the last completed. */
+function finishedRunId(runId?: number): number {
+  const run = runId ? testRunsRepo.get(Number(runId)) : testRunsRepo.lastCompleted()
+  if (!run || !run.endedAt) throw new CommandError(ErrorCode.NO_COMPLETED_RUN)
+  return run.id
+}
+
+async function pickFolder(title: string, defaultPath: string): Promise<string | null> {
+  const window = BrowserWindow.getFocusedWindow()
+  const options = {
+    title,
+    defaultPath,
+    properties: ['openDirectory', 'createDirectory'] as ('openDirectory' | 'createDirectory')[]
+  }
+  const result = window ? await dialog.showOpenDialog(window, options) : await dialog.showOpenDialog(options)
+  return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0]
 }
 
 /** Fan hardware events out to every renderer window. */

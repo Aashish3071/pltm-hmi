@@ -6,6 +6,7 @@ import {
   FAULT_STATUSES,
   HardwareStatus,
   type CommandSpec,
+  disconnectedHint,
   type HardwareSnapshot,
   type JogDirection,
   type MachineMode,
@@ -480,7 +481,12 @@ export class ModbusHardware extends EventEmitter implements HardwareInterface {
   // -------------------------------------------------------------------------
 
   private requireClient(): ModbusClient {
-    if (!this.client) throw new CommandError(ErrorCode.HARDWARE_DISCONNECTED)
+    if (!this.client) {
+      throw new CommandError(
+        ErrorCode.HARDWARE_DISCONNECTED,
+        `Machine is disconnected. ${disconnectedHint(this.connection.transport)}`
+      )
+    }
     return this.client
   }
 

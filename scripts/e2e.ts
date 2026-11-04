@@ -3,7 +3,8 @@
  * an isolated profile, and saves screenshots of each screen.
  * Run with: npm run test:e2e   (screenshots land in scripts/out/e2e/)
  */
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'fs'
+import { DEV_RECOVERY_SECRET, responseCode } from '../src/main/services/recoveryCode'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join, resolve } from 'path'
 import { _electron as electron, type Page } from 'playwright-core'
@@ -57,6 +58,9 @@ async function main(): Promise<void> {
     rmSync(dir, { recursive: true, force: true })
     mkdirSync(dir, { recursive: true })
   }
+  // Startup makes an automatic backup; keep it out of the real Documents folder.
+  const backups = join(documents, 'PLTM Backups')
+  writeFileSync(join(profile, 'backup-settings.json'), JSON.stringify({ dir: backups }))
 
   // E2E_EXECUTABLE runs the suite against a packaged app instead of the build output.
   const packaged = process.env.E2E_EXECUTABLE
@@ -186,6 +190,21 @@ async function main(): Promise<void> {
   check('status shows calibration valid', (await page.locator('.state-badge.ok').count()) >= 2)
   await shot(page, '07d-calibration-done')
 
+  console.log('\nBackup')
+  await page.getByRole('button', { name: 'DATA', exact: true }).click()
+  await page.locator('.backup-panel').waitFor()
+  check('startup made an automatic backup', (await page.locator('.backup-table tbody tr', { hasText: 'Automatic' }).count()) === 1)
+  check('backup folder shown', (await page.locator('.backup-dir').innerText()).includes('PLTM Backups'))
+  await page.getByRole('button', { name: 'BACK UP NOW' }).click()
+  check('manual backup saved', await toastAppears(page, 'Backup saved'))
+  check('backup listed with its test count', (await page.locator('.backup-table tbody tr', { hasText: 'Manual' }).count()) === 1)
+  await page.locator('.backup-table tbody tr', { hasText: 'Manual' }).getByRole('button', { name: 'RESTORE' }).click()
+  check('restore asks for confirmation', await page.locator('.modal', { hasText: 'RESTORE BACKUP?' }).isVisible())
+  await shot(page, '07e-backup-restore-confirm')
+  await page.locator('.modal').getByRole('button', { name: 'CANCEL' }).click()
+  check('cancel leaves the data alone', !(await page.locator('.modal').isVisible()))
+  await shot(page, '07f-backup')
+
   await page.locator('.settings-footer').getByRole('button', { name: 'HOME' }).click()
   await page.locator('.home').waitFor()
   check('safety strip shown on home', (await page.locator('.safety-strip').textContent())?.includes('E-STOP') ?? false)
@@ -232,6 +251,29 @@ async function main(): Promise<void> {
   check('PDF certificate written alongside', !!pdfName && readFileSync(join(reportFolder, pdfName)).subarray(0, 5).toString() === '%PDF-', `(${reports.join(', ')})`)
   await shot(page, '10-report')
 
+  console.log('\nHistory')
+  const certificateNo = ((await page.locator('.toast', { hasText: 'Report and certificate' }).first().innerText()).match(/certificate (\S+) saved/) ?? [])[1]
+  await page.getByRole('button', { name: 'HISTORY' }).click()
+  await page.locator('.history').waitFor()
+  const row = page.locator('.history-table tbody tr', { hasText: 'E2E-0001' })
+  check('the test is listed in history', (await row.count()) === 1)
+  check('listed as COMPLETED with its certificate', (await row.locator('td.fit-pass').innerText()) === 'COMPLETED' && !!certificateNo && (await row.innerText()).includes(certificateNo), `(${await row.innerText()})`)
+  check('newest test selected and graphed', await row.evaluate((el) => el.classList.contains('selected')))
+  await page.getByPlaceholder('any').fill('NO-SUCH-PART')
+  await page.getByRole('button', { name: 'SEARCH' }).click()
+  check('Part-No filter narrows the list', await page.locator('.history-count', { hasText: 'No tests match' }).waitFor({ timeout: 5000 }).then(() => true, () => false))
+  await page.getByRole('button', { name: 'CLEAR', exact: true }).click()
+  await page.getByPlaceholder('any').fill('e2e-00')
+  await page.getByRole('button', { name: 'SEARCH' }).click()
+  await row.waitFor()
+  check('Part-No search ignores case and matches part of it', (await row.count()) === 1)
+  check('a completed test shows no warning', !(await page.locator('.history-detail .hint.warn').isVisible()))
+  await page.getByRole('button', { name: 'REPRINT REPORT' }).click()
+  check('reprint keeps the certificate number', await toastAppears(page, `certificate ${certificateNo} saved`, 15000))
+  await shot(page, '10b-history')
+  await page.locator('.history-footer').getByRole('button', { name: 'HOME' }).click()
+  await page.locator('.home').waitFor()
+
   console.log('\nManual jog')
   await page.getByRole('button', { name: 'RESET' }).click()
   await waitStatus(page, 'READY', 5000)
@@ -277,6 +319,7 @@ async function main(): Promise<void> {
   await page.getByRole('button', { name: 'DISCONNECT' }).click()
   await page.locator('.settings-footer').getByRole('button', { name: 'HOME' }).click()
   check('disconnect banner shown', await page.locator('.disconnect-banner').isVisible())
+  check('banner says what to check', /Check the machine power and the (Ethernet cable|USB-RS485 adapter cable)/.test(await page.locator('.disconnect-banner').innerText()))
   await shot(page, '13-disconnected')
   try {
     await page.locator('.disconnect-banner').waitFor({ state: 'detached', timeout: 15000 })
@@ -303,6 +346,30 @@ async function main(): Promise<void> {
   await page.locator('.modal').getByRole('button', { name: 'CANCEL' }).click()
   await page.getByRole('button', { name: 'LOGOUT' }).click()
   await page.getByPlaceholder('USER NAME').waitFor()
+
+  console.log('\nForgotten admin password')
+  await page.getByRole('button', { name: 'FORGOT ADMIN PASSWORD?' }).click()
+  await page.locator('.request-code').filter({ hasText: /^[0-9A-Z]{4}-[0-9A-Z]{4}$/ }).waitFor()
+  const requestCode = await page.locator('.request-code').innerText()
+  const machineId = await page.locator('.recovery-codes b').first().innerText()
+  check('request code and machine ID shown', /^[0-9A-Z]{4}-[0-9A-Z]{4}$/.test(requestCode) && machineId.length > 0, `(${requestCode}, ${machineId})`)
+  await shot(page, '15-recovery')
+  const dialog = page.locator('.modal')
+  await dialog.getByPlaceholder('XXXXX-XXXXX').fill('AAAAA-AAAAA')
+  await dialog.locator('input[type=password]').nth(0).fill('newadmin1')
+  await dialog.locator('input[type=password]').nth(1).fill('newadmin1')
+  await dialog.getByRole('button', { name: 'RESET PASSWORD' }).click()
+  check('a wrong response code is refused', await dialog.locator('.login-error', { hasText: 'not right' }).waitFor({ timeout: 5000 }).then(() => true, () => false))
+  const secret = process.env.PLTM_RECOVERY_SECRET || DEV_RECOVERY_SECRET
+  await dialog.getByPlaceholder('XXXXX-XXXXX').fill(responseCode(secret, requestCode, machineId).toLowerCase())
+  await dialog.getByRole('button', { name: 'RESET PASSWORD' }).click()
+  check('the support response code resets the password', await toastAppears(page, 'ADMIN password changed'))
+  await page.getByPlaceholder('PASSWORD').fill('admin')
+  await page.getByRole('button', { name: 'LOGIN' }).click()
+  check('the old password no longer works', await page.locator('.login-error').waitFor({ timeout: 5000 }).then(() => true, () => false))
+  await page.getByPlaceholder('PASSWORD').fill('newadmin1')
+  await page.getByRole('button', { name: 'LOGIN' }).click()
+  check('ADMIN logs in with the new password', await page.locator('.home').waitFor({ timeout: 5000 }).then(() => true, () => false))
 
   check('no renderer errors', errors.length === 0, errors.join(' | '))
 

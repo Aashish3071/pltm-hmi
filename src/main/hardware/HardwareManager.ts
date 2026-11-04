@@ -8,6 +8,8 @@ import type {
   ModelConfig,
   SpeedSettings
 } from '@shared/types'
+import { disconnectedHint, ErrorCode } from '@shared/types'
+import { CommandError } from '../errors'
 import { calibrationsRepo, settingsRepo } from '../db/repositories'
 import { log } from '../logger'
 import {
@@ -286,4 +288,12 @@ export function initHardware(): HardwareHub {
 export function getHardware(): HardwareHub {
   if (!hub) throw new Error('Hardware not initialised — call initHardware() first')
   return hub
+}
+
+/** HARDWARE_DISCONNECTED with a hint that matches how the machine is connected. */
+export function disconnectedError(): CommandError {
+  return new CommandError(
+    ErrorCode.HARDWARE_DISCONNECTED,
+    `Machine is disconnected. ${disconnectedHint(loadHardwareConfig().connection.transport)}`
+  )
 }

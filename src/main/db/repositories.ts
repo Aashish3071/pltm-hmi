@@ -4,6 +4,8 @@ import type {
   LoadCellCertificate,
   ModelConfig,
   SpeedSettings,
+  TestRunPage,
+  TestRunQuery,
   TestRunSummary,
   UserAccount
 } from '@shared/types'
@@ -262,7 +264,7 @@ export const testRunsRepo = {
       .prepare(
         `SELECT r.id, u.display_name AS employee_name, m.name AS model_name, r.part_no,
                 r.started_at, r.ended_at, r.up_cycle_sec, r.down_cycle_sec, r.max_load_n,
-                r.result_status, r.report_path
+                r.result_status, r.report_path, r.certificate_no
          FROM test_runs r
          LEFT JOIN users u ON u.id = r.employee_user_id
          LEFT JOIN models m ON m.id = r.model_id
@@ -277,7 +279,7 @@ export const testRunsRepo = {
       .prepare(
         `SELECT r.id, u.display_name AS employee_name, m.name AS model_name, r.part_no,
                 r.started_at, r.ended_at, r.up_cycle_sec, r.down_cycle_sec, r.max_load_n,
-                r.result_status, r.report_path
+                r.result_status, r.report_path, r.certificate_no
          FROM test_runs r
          LEFT JOIN users u ON u.id = r.employee_user_id
          LEFT JOIN models m ON m.id = r.model_id
@@ -286,6 +288,53 @@ export const testRunsRepo = {
       )
       .get() as Record<string, unknown> | undefined
     return row ? mapRunSummary(row) : undefined
+  },
+
+  /** Finished runs matching the query, newest first, with the total match count. */
+  search(query: TestRunQuery): TestRunPage {
+    const where = ['r.ended_at IS NOT NULL']
+    const params: (string | number)[] = []
+    const partNo = String(query.partNo ?? '').trim()
+    if (partNo) {
+      where.push("r.part_no LIKE ? ESCAPE '\\'")
+      params.push(`%${partNo.replace(/[\\%_]/g, (c) => `\\${c}`)}%`)
+    }
+    if (query.modelId) {
+      where.push('r.model_id = ?')
+      params.push(Number(query.modelId))
+    }
+    // started_at is stored in UTC; filter on the operator's local calendar date.
+    if (query.fromDate) {
+      where.push("date(r.started_at, 'localtime') >= ?")
+      params.push(String(query.fromDate))
+    }
+    if (query.toDate) {
+      where.push("date(r.started_at, 'localtime') <= ?")
+      params.push(String(query.toDate))
+    }
+    if (query.resultStatus) {
+      where.push('r.result_status = ?')
+      params.push(String(query.resultStatus))
+    }
+    const filter = where.join(' AND ')
+    const limit = Math.min(Math.max(Number(query.limit) || 100, 1), 500)
+    const offset = Math.max(Number(query.offset) || 0, 0)
+    const total = (
+      getDb().prepare(`SELECT COUNT(*) AS n FROM test_runs r WHERE ${filter}`).get(...params) as { n: number }
+    ).n
+    const rows = getDb()
+      .prepare(
+        `SELECT r.id, u.display_name AS employee_name, m.name AS model_name, r.part_no,
+                r.started_at, r.ended_at, r.up_cycle_sec, r.down_cycle_sec, r.max_load_n,
+                r.result_status, r.report_path, r.certificate_no
+         FROM test_runs r
+         LEFT JOIN users u ON u.id = r.employee_user_id
+         LEFT JOIN models m ON m.id = r.model_id
+         WHERE ${filter}
+         ORDER BY r.id DESC LIMIT ? OFFSET ?`
+      )
+      .all(...params, limit, offset) as Record<string, unknown>[]
+    return { runs: rows.map(mapRunSummary), total }
   },
 
   modelIdOf(runId: number): number | null {
@@ -315,7 +364,8 @@ function mapRunSummary(row: Record<string, unknown>): TestRunSummary {
     downCycleSec: (row.down_cycle_sec as number) ?? null,
     maxLoadN: (row.max_load_n as number) ?? null,
     resultStatus: (row.result_status as string) ?? null,
-    reportPath: (row.report_path as string) ?? null
+    reportPath: (row.report_path as string) ?? null,
+    certificateNo: (row.certificate_no as string) ?? null
   }
 }
 
