@@ -1,8 +1,8 @@
-# PLTM HMI
+# PantoCheck
 
-Operator software for Novatek's **Pantograph Load Testing Machine** (PLTM). It runs on the machine's Windows touchscreen PC, talks to the PLTM Control Box over **Modbus RTU**, plots load against height live during a test, and saves an Excel report for every test. It replaces the original `Main_Gui.exe` and follows the same screens and workflow as the machine's user manual.
+Operator software for **pantograph load testing machines**. It runs on the machine's Windows touchscreen PC, talks to the machine's **Siemens S7 PLC over Ethernet** (or a Modbus PLC), plots load against height live during a test, computes the static contact force results and saves an Excel, PDF and JSON report for every test.
 
-### ⬇ [Download the Windows installer (PLTM-HMI-Setup.exe)](https://github.com/Aashish3071/pltm-hmi/releases/latest)
+### ⬇ [Download the Windows installer](https://github.com/Aashish3071/pltm-hmi/releases/latest)
 
 > The green **Code → Download ZIP** button gives the *source code only* — it does not contain the installer. Use the link above, then click the `.exe` under **Assets**.
 
@@ -10,30 +10,28 @@ Operator software for Novatek's **Pantograph Load Testing Machine** (PLTM). It r
 
 ## Download and install (Windows)
 
-1. Open the **[latest Release](https://github.com/Aashish3071/pltm-hmi/releases/latest)** and, under **Assets**, download `PLTM-HMI-Setup-<version>.exe`. Download it directly on the Windows PC: sending the `.exe` by chat or email can corrupt or block it.
+1. Open the **[latest Release](https://github.com/Aashish3071/pltm-hmi/releases/latest)** and, under **Assets**, download `PantoCheck-Setup-<version>.exe`. Download it directly on the Windows PC: sending the `.exe` by chat or email can corrupt or block it.
 2. Run it on the Windows PC. If Windows shows *"Windows protected your PC"*, click **More info → Run anyway** (the installer is not code-signed).
-3. Start **PLTM HMI** from the desktop shortcut and log in as `ADMIN` / `admin`.
-4. Open **SETTINGS** and change all four passwords before anyone else uses it.
+3. Start **PantoCheck** from the desktop shortcut and log in as `ADMIN` / `1234` (operators: `OPERATOR1`–`3` / `123`).
+4. Open **SETTINGS** (administrator sign-in) and change all four passwords before anyone else uses it.
 
 | Requirement | |
 | --- | --- |
 | Windows | 10 or 11, 64-bit |
-| Other software | None. The installer contains everything |
+| Other software | None. The installer contains everything (Microsoft Excel is not needed for reports) |
 | Admin rights | Not needed. It installs for the current Windows user |
 
 Each release is built and tested on Windows by GitHub Actions ([workflow](.github/workflows/windows.yml)).
 
 ## Features
 
-- **Login and users**: four accounts (ADMIN, OPERATOR1-3), passwords stored hashed. Settings need the admin password.
-- **Live test screen**: load (N) vs height (mm) graph over the model's profile, status bar, live readings, up/down cycle timers.
-- **Operating buttons** as in the original HMI: START, STOP / RESUME, RESET, HOMING, REPORT, SETTINGS, LOGOUT, CLOSE.
-- **Models**: create, edit and delete test profiles of 9 load/height points; row 4's height is the travel distance.
-- **Reports and test certificates**: REPORT saves an Excel workbook and a numbered PDF test certificate per test: raising force Fr, lowering force Fl, mean static contact force (Fr + Fl) / 2 and hysteresis Fl − Fr by height, the force/height graph, the calibration in force on the test date, signature blocks, and a SHA-256 fingerprint of the stored record.
-- **Load-cell calibration**: multi-point calibration with reference weights (least-squares fit, live error preview, pass/fail against a maximum permissible error), the accredited (NABL / ISO 17025) load-cell certificate with its scanned file, due-date tracking, and an optional policy that blocks tests when either is overdue. Every test records which calibration and certificate it ran under.
-- **Machine connection** over Modbus RTU through a USB-to-RS485 adapter (COM port picked from a list of detected ports) or an Ethernet gateway (RTU over TCP, or Modbus TCP). Addresses come from an editable register map, so commissioning needs no code changes.
-- **Simulator** built in, for training and for running without the machine.
-- **Safety**: E-stop, overload trip, travel limits and a communication watchdog run in the PLC ([requirements](docs/plc-safety-requirements.md)); the app reads their signals, shows them on the Home screen, sends the PLC its overload and travel limits, and feeds the watchdog. On top of that: a backup software overload trip, HOMING and START guard rails, hold-to-run jog that stops within 0.6 s if the hold is lost, automatic reconnection, and tests cut short by a disconnect or power loss are recorded as such.
+- **Home**: live status (READY, PANTO RAISING, HALT, faults…) with an alarm indicator, AUTO / MANUAL mode, raising and lowering cycle times, machine readings (max height, load, position, up / down / jog speed) and the load–height graph with the model's reference envelope and the last three tests (n, n-1, n-2).
+- **Results**: average up and down force, mean force, peak friction, hysteresis and height reached.
+- **Operation**: Employee, Model and Part-No with OK / CLEAR; START, STOP (becomes RESUME while paused), RESET, HOMING, REPORT, SETTINGS, LOGOUT, CLOSE.
+- **Settings** (administrator only): pantograph models (name and 9 load/height points; point 4 is the travel distance), user names, passwords, and up / down / jog speeds (UPLOAD sends them to the PLC).
+- **Reports**: one A4 test report per test as **Excel**, **PDF** and **JSON** (with every recorded sample), named after the model, part number and time.
+- **Machine connection**: **Siemens S7** over Ethernet, or **Modbus** RTU (USB-to-RS485 COM port), RTU over TCP or Modbus TCP, plus a built-in **simulator**. Reconnects by itself and shows ETHERNET DISCONNECTED meanwhile.
+- **Users**: four accounts; passwords stored hashed.
 
 | Login | Settings |
 | --- | --- |
@@ -41,31 +39,29 @@ Each release is built and tested on Windows by GitHub Actions ([workflow](.githu
 
 ## Connecting to the machine
 
-Connection settings are in **SETTINGS → CONNECTION** (admin only).
+Connection settings are under **SETTINGS → SYSTEM** (administrator only).
 
-| Connection | Hardware | PROTOCOL setting |
+| Machine | Hardware | Driver |
 | --- | --- | --- |
-| USB-to-RS485 adapter | Adapter driver (FTDI, CH340 or CP210x) so it appears as a COM port | Modbus RTU, serial COM port |
-| Ethernet gateway, transparent mode | PC on the gateway's address range, e.g. `192.168.0.x` | Modbus RTU over TCP (gateway) |
-| Ethernet gateway, Modbus TCP mode | PC on the gateway's address range | Modbus TCP |
+| Siemens PLC | Ethernet cable to the PLC; PC on the PLC's network (e.g. `192.168.0.x`) | Siemens S7 — IP, rack, slot and data block addresses |
+| Modbus PLC, USB-to-RS485 adapter | Adapter driver (FTDI, CH340 or CP210x) so it appears as a COM port | Modbus RTU, COM port |
+| Modbus PLC behind an Ethernet gateway | PC on the gateway's address range | Modbus RTU over TCP, or Modbus TCP |
 
-> **The register map shipped with the software is a placeholder.** Enter the real PLC addresses from the PLC programmer before switching the driver from *Simulator* to *Modbus*. **TEST CONNECTION** only reads from the machine, so it is safe for checking addresses.
-
-The full step-by-step commissioning procedure, register map reference and troubleshooting are in the *PLTM HMI Installation & Commissioning Guide* supplied with the software.
+**TEST CONNECTION** only reads from the machine, so it is safe for checking addresses. The PLC interface, status codes, result formulas and the commissioning checklist are in [docs/plc-interface.md](docs/plc-interface.md).
 
 ## Where data is stored (Windows)
 
 | What | Location |
 | --- | --- |
-| Users, models, settings, test history | `%APPDATA%\pltm-hmi\pltm.db` |
-| Log file | `%APPDATA%\pltm-hmi\logs\pltm.log` |
-| Excel reports | `Documents\PLTM Reports` (changeable in Settings) |
+| Users, models, settings, test history | `%APPDATA%\PantoCheck\pltm.db` |
+| Log file | `%APPDATA%\PantoCheck\logs\pltm.log` |
+| Reports (.xlsx, .pdf, .json) | `Documents\PantoCheck Reports` (changeable under SETTINGS → SYSTEM) |
 
 ---
 
 ## Development
 
-Built with Electron, React and TypeScript ([electron-vite](https://electron-vite.org)), SQLite ([better-sqlite3](https://github.com/WiseLibs/better-sqlite3)), [modbus-serial](https://github.com/yaacov/node-modbus-serial) and [serialport](https://serialport.io), [ExcelJS](https://github.com/exceljs/exceljs) for reports, packaged with [electron-builder](https://www.electron.build).
+Built with Electron, React and TypeScript ([electron-vite](https://electron-vite.org)), SQLite ([better-sqlite3](https://github.com/WiseLibs/better-sqlite3)), a built-in Siemens S7 client (`src/main/hardware/s7`), [modbus-serial](https://github.com/yaacov/node-modbus-serial) and [serialport](https://serialport.io), [ExcelJS](https://github.com/exceljs/exceljs) for reports, packaged with [electron-builder](https://www.electron.build).
 
 ```bash
 npm install
@@ -77,10 +73,9 @@ npm run dev          # run the app with hot reload
 ```bash
 npm test             # all suites below
 npm run typecheck
-npm run smoke        # simulator, database, guard rails, reports
-npm run test:modbus  # real driver vs a simulated PLC: RTU over TCP, Modbus TCP, link loss
-npm run test:serial  # real driver over a virtual COM port (needs socat: brew install socat)
-npm run test:e2e     # clicks through the built app with Playwright; screenshots in scripts/out/e2e
+npm run test:machine # result maths; S7 driver vs a fake S7 PLC; Modbus RTU/TCP; simulator; reports
+npm run test:serial  # Modbus driver over a virtual COM port (needs socat: brew install socat)
+npm run test:e2e     # clicks through the built app against a fake S7 PLC; screenshots in scripts/out/e2e
 ```
 
 The serial suite is skipped automatically where `socat` is not available (e.g. Windows).
@@ -88,7 +83,7 @@ The serial suite is skipped automatically where `socat` is not available (e.g. W
 ### Building the Windows installer
 
 ```bash
-npm run dist:win     # -> dist/PLTM-HMI-Setup-<version>.exe
+npm run dist:win     # -> dist/PantoCheck-Setup-<version>.exe
 ```
 
 Works on Windows and macOS. On Apple Silicon Macs without Rosetta, install a native NSIS first (`brew install makensis`); the build script uses it automatically.
@@ -98,7 +93,7 @@ Works on Windows and macOS. On Apple Silicon Macs without Rosetta, install a nat
 Bump `version` in `package.json`, commit, then push a tag:
 
 ```bash
-git tag v1.0.1 && git push origin v1.0.1
+git tag v2.0.0 && git push origin v2.0.0
 ```
 
 GitHub Actions runs the tests on Windows, builds the installer there and attaches it to a new Release.
@@ -108,9 +103,9 @@ GitHub Actions runs the tests on Windows, builds the installer there and attache
 | Path | Contents |
 | --- | --- |
 | `src/main/` | Electron main process: database, services, IPC handlers |
-| `src/main/hardware/` | Hardware layer: `HardwareManager` (driver hub, reconnect, jog watchdog), `ModbusHardware`, `MockHardware` (simulator), register map validation |
+| `src/main/hardware/` | Hardware layer: `HardwareManager` (driver hub, reconnect), `S7Hardware` + `s7/S7Client`, `ModbusHardware`, `MockHardware` and `PlcEmulator` (simulator), config validation |
 | `src/preload/` | The typed `window.pltm` API exposed to the UI |
-| `src/renderer/` | React UI: Login, Home, Settings screens |
-| `src/shared/types.ts` | Types, statuses, error codes and IPC channel names shared by both sides |
-| `scripts/` | Test suites, fake PLC, icon generator, build hooks |
+| `src/renderer/` | React UI: Login, Home, Settings screens and dialogs |
+| `src/shared/` | Types, status codes, IPC channel names, product name (`brand.ts`), filter and result formulas (`analysis.ts`) |
+| `scripts/` | Test suites, fake S7 and Modbus PLCs, icon generator, build hooks |
 | `resources/` | App icon (`icon.png`, `icon.ico`) |

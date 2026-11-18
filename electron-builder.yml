@@ -1,5 +1,5 @@
-appId: com.novatek.pltm
-productName: PLTM HMI
+appId: com.pantocheck.app
+productName: PantoCheck
 directories:
   buildResources: resources
   output: dist
@@ -20,7 +20,7 @@ win:
     - target: nsis
       arch:
         - x64
-  artifactName: PLTM-HMI-Setup-${version}.${ext}
+  artifactName: PantoCheck-Setup-${version}.${ext}
 nsis:
   oneClick: false
   installerLanguages:
@@ -31,7 +31,7 @@ nsis:
   perMachine: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
-  shortcutName: PLTM HMI
+  shortcutName: PantoCheck
 mac:
   target: dmg
   category: public.app-category.utilities

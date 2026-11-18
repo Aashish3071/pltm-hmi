@@ -3,7 +3,7 @@ import { app } from 'electron'
 import Database from 'better-sqlite3'
 import bcrypt from 'bcryptjs'
 import { MIGRATIONS } from './schema'
-import { DEFAULT_CONNECTION, DEFAULT_REGISTER_MAP } from '../hardware/config'
+import { DEFAULT_HARDWARE_CONFIG } from '../hardware/config'
 
 let db: Database.Database | null = null
 
@@ -12,15 +12,14 @@ export function getDb(): Database.Database {
   return db
 }
 
-export function initDb(): Database.Database {
-  const file = join(app.getPath('userData'), 'pltm.db')
+export function initDb(file = join(app.getPath('userData'), 'pltm.db')): Database.Database {
   db = new Database(file)
   db.pragma('journal_mode = WAL')
   db.pragma('foreign_keys = ON')
   migrate(db)
   seed(db)
-  // No run can be in progress at startup; anything still open was cut short by
-  // a crash or power loss.
+  // No test can be in progress at startup; anything still open was cut short
+  // by a crash or power loss.
   db.prepare(
     "UPDATE test_runs SET ended_at = datetime('now'), result_status = 'ABORTED' WHERE ended_at IS NULL"
   ).run()
@@ -46,115 +45,55 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   up_speed_mm_s: '50',
   down_speed_mm_s: '50',
   jog_speed_mm_s: '50',
-  load_capacity_n: '250',
+  load_capacity_kg: '50',
   height_capacity_mm: '4000',
-  machine_id: 'PLTM-0001',
+  machine_id: 'PLT-001',
   report_output_dir: '',
-  hardware_driver: 'simulator',
-  modbus_connection: JSON.stringify(DEFAULT_CONNECTION),
-  modbus_register_map: JSON.stringify(DEFAULT_REGISTER_MAP, null, 2),
-  company_name: 'Novatek',
-  company_address: '',
-  calibration_enforcement: 'warn',
-  calibration_interval_months: '12',
-  calibration_mpe_n: '1',
-  certificate_seq: '0'
+  hardware_config: JSON.stringify(DEFAULT_HARDWARE_CONFIG),
+  company_name: '',
+  company_address_1: '',
+  company_address_2: '',
+  measurement_speed_text: '',
+  graph_history: '[]'
 }
 
 /**
- * Model profiles are (load, height) control points read top-to-bottom as the
- * pantograph rises then falls, tracing the closed load-vs-height envelope from
- * the manual. Row 4's height is the travel distance.
+ * Starter models: 9 heights rising to the travel distance and back, with the
+ * reference loads. Edit or add models in Settings.
  */
-const DEFAULT_MODELS: { name: string; distance: number; points: [number, number][] }[] = [
+const DEFAULT_MODELS: { name: string; heights: number[]; loads: number[] }[] = [
   {
-    name: 'PANTO 3.8',
-    distance: 3800,
-    points: [
-      [55, 150],
-      [60, 860],
-      [60, 3000],
-      [55, 3800],
-      [85, 3800],
-      [80, 3000],
-      [80, 860],
-      [85, 150],
-      [55, 150]
-    ]
+    name: 'PANTO-3600',
+    heights: [150, 840, 2910, 3600, 3600, 2910, 840, 150, 150],
+    loads: [55, 60, 60, 55, 85, 80, 80, 85, 55]
   },
   {
-    name: 'HIGH SPEED BELLOW',
-    distance: 3300,
-    points: [
-      [60, 150],
-      [65, 800],
-      [65, 2600],
-      [60, 3300],
-      [90, 3300],
-      [85, 2600],
-      [85, 800],
-      [90, 150],
-      [60, 150]
-    ]
+    name: 'PANTO-3400',
+    heights: [150, 700, 2700, 3400, 3400, 2700, 700, 150, 150],
+    loads: [55, 60, 60, 55, 85, 80, 80, 85, 55]
   },
   {
-    name: 'RE140L',
-    distance: 2900,
-    points: [
-      [50, 140],
-      [55, 700],
-      [55, 2300],
-      [50, 2900],
-      [78, 2900],
-      [74, 2300],
-      [74, 700],
-      [78, 140],
-      [50, 140]
-    ]
+    name: 'PANTO-2400',
+    heights: [100, 560, 1940, 2400, 2400, 1940, 560, 100, 100],
+    loads: [50, 55, 55, 50, 80, 75, 75, 80, 50]
   },
   {
-    name: 'RE140E',
-    distance: 2900,
-    points: [
-      [52, 140],
-      [57, 700],
-      [57, 2300],
-      [52, 2900],
-      [80, 2900],
-      [76, 2300],
-      [76, 700],
-      [80, 140],
-      [52, 140]
-    ]
-  },
-  {
-    name: 'RE260',
-    distance: 2600,
-    points: [
-      [48, 130],
-      [53, 650],
-      [53, 2100],
-      [48, 2600],
-      [75, 2600],
-      [71, 2100],
-      [71, 650],
-      [75, 130],
-      [48, 130]
-    ]
+    name: 'PANTO-1800',
+    heights: [100, 440, 1460, 1800, 1800, 1460, 440, 100, 100],
+    loads: [50, 55, 55, 50, 80, 75, 75, 80, 50]
   }
 ]
 
+/** Four accounts; the first one is the administrator. */
 const DEFAULT_USERS: { slot: string; role: 'admin' | 'operator'; password: string }[] = [
-  { slot: 'ADMIN', role: 'admin', password: 'admin' },
-  { slot: 'OPERATOR1', role: 'operator', password: 'operator1' },
-  { slot: 'OPERATOR2', role: 'operator', password: 'operator2' },
-  { slot: 'OPERATOR3', role: 'operator', password: 'operator3' }
+  { slot: 'ADMIN', role: 'admin', password: '1234' },
+  { slot: 'OPERATOR1', role: 'operator', password: '123' },
+  { slot: 'OPERATOR2', role: 'operator', password: '123' },
+  { slot: 'OPERATOR3', role: 'operator', password: '123' }
 ]
 
 function seed(database: Database.Database): void {
-  const insertSetting = database.prepare(
-    'INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)'
-  )
+  const insertSetting = database.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)')
   for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) insertSetting.run(key, value)
 
   const userCount = database.prepare('SELECT COUNT(*) AS n FROM users').get() as { n: number }
@@ -162,9 +101,7 @@ function seed(database: Database.Database): void {
     const insertUser = database.prepare(
       'INSERT INTO users (slot, display_name, password_hash, role) VALUES (?, ?, ?, ?)'
     )
-    for (const u of DEFAULT_USERS) {
-      insertUser.run(u.slot, u.slot, bcrypt.hashSync(u.password, 10), u.role)
-    }
+    for (const u of DEFAULT_USERS) insertUser.run(u.slot, u.slot, bcrypt.hashSync(u.password, 10), u.role)
   }
 
   const modelCount = database.prepare('SELECT COUNT(*) AS n FROM models').get() as { n: number }
@@ -173,14 +110,14 @@ function seed(database: Database.Database): void {
     const insertPoint = database.prepare(
       'INSERT INTO model_points (model_id, row_index, load_n, height_mm) VALUES (?, ?, ?, ?)'
     )
-    const seedModels = database.transaction(() => {
+    database.transaction(() => {
       for (const m of DEFAULT_MODELS) {
-        const { lastInsertRowid } = insertModel.run(m.name, m.distance)
-        m.points.forEach(([load, height], i) => {
-          insertPoint.run(lastInsertRowid, i + 1, load, height)
-        })
+        const { lastInsertRowid } = insertModel.run(m.name, m.heights[3])
+        m.heights.forEach((height, i) => insertPoint.run(lastInsertRowid, i + 1, m.loads[i], height))
       }
-    })
-    seedModels()
+    })()
+    database
+      .prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)')
+      .run('current_model_id', String((database.prepare('SELECT MIN(id) AS id FROM models').get() as { id: number }).id))
   }
 }

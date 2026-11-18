@@ -1,7 +1,7 @@
 /**
  * Renders resources/icon.png and a multi-size resources/icon.ico (the Windows
- * app/installer icon). To use real Novatek artwork, replace the SVG below — or
- * set ICON_SOURCE=/path/to/logo.png — and rerun: npm run icon
+ * app/installer icon). To use other artwork, replace the SVG below — or set
+ * ICON_SOURCE=/path/to/logo.png — and rerun: npm run icon
  */
 import { app, BrowserWindow, nativeImage, type NativeImage } from 'electron'
 import { mkdirSync, readFileSync, writeFileSync } from 'fs'
@@ -11,8 +11,8 @@ const SVG = `
 <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#3b6fd4"/>
-      <stop offset="100%" stop-color="#1b3a86"/>
+      <stop offset="0%" stop-color="#1d3b57"/>
+      <stop offset="100%" stop-color="#0d1f30"/>
     </linearGradient>
   </defs>
   <rect width="512" height="512" rx="96" fill="url(#bg)"/>
@@ -21,10 +21,10 @@ const SVG = `
   <rect x="150" y="130" width="30" height="26" fill="#ffffff"/>
   <rect x="332" y="130" width="30" height="26" fill="#ffffff"/>
   <!-- pantograph arms -->
-  <path d="M256 156 L150 300" stroke="#ff5a5a" stroke-width="30" stroke-linecap="round" fill="none"/>
-  <path d="M256 156 L362 300" stroke="#ff5a5a" stroke-width="30" stroke-linecap="round" fill="none"/>
-  <path d="M150 300 L216 392" stroke="#ff5a5a" stroke-width="30" stroke-linecap="round" fill="none"/>
-  <path d="M362 300 L296 392" stroke="#ff5a5a" stroke-width="30" stroke-linecap="round" fill="none"/>
+  <path d="M256 156 L150 300" stroke="#14b8a6" stroke-width="30" stroke-linecap="round" fill="none"/>
+  <path d="M256 156 L362 300" stroke="#14b8a6" stroke-width="30" stroke-linecap="round" fill="none"/>
+  <path d="M150 300 L216 392" stroke="#14b8a6" stroke-width="30" stroke-linecap="round" fill="none"/>
+  <path d="M362 300 L296 392" stroke="#14b8a6" stroke-width="30" stroke-linecap="round" fill="none"/>
   <!-- base -->
   <rect x="112" y="392" width="288" height="34" rx="17" fill="#ffffff"/>
 </svg>`

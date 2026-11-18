@@ -96,5 +96,7 @@ CREATE TABLE load_cell_certificates (
 ALTER TABLE test_runs ADD COLUMN calibration_id INTEGER REFERENCES calibrations(id);
 ALTER TABLE test_runs ADD COLUMN load_cell_certificate_id INTEGER REFERENCES load_cell_certificates(id);
 ALTER TABLE test_runs ADD COLUMN certificate_no TEXT;
-`
+`,
+  // v4 — results stored with the run; test_run_points.phase holds the PLC status code.
+  `ALTER TABLE test_runs ADD COLUMN results_json TEXT;`
 ]

@@ -1,76 +1,69 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useLayoutEffect, useState, type ReactNode } from 'react'
 import { api } from './api/client'
-import LoginScreen from './screens/Login/LoginScreen'
-import HomeScreen from './screens/Home/HomeScreen'
-import SettingsScreen from './screens/Settings/SettingsScreen'
-import TitleBar from './components/TitleBar'
-import ToastStack from './components/ToastStack'
-import { connectMachineEvents, useMachineStore } from './state/machineStore'
-import { useSessionStore } from './state/sessionStore'
-import { toast } from './state/toastStore'
+import { MessageBoxHost } from './components/MessageBox'
+import LoginScreen from './screens/LoginScreen'
+import SettingsScreen from './screens/SettingsScreen'
+import HomeScreen from './screens/HomeScreen'
+import { connectMachine, useMachine } from './state/machine'
 
-type Screen = 'login' | 'home' | 'settings'
+type Screen = 'login' | 'main' | 'settings'
+
+/** The 1366 × 768 touchscreen layout, scaled to the window. */
+function Stage({ children }: { children: ReactNode }): JSX.Element {
+  const [transform, setTransform] = useState('')
+  useLayoutEffect(() => {
+    const fit = (): void => {
+      const s = Math.min(window.innerWidth / 1366, window.innerHeight / 768)
+      const x = (window.innerWidth - 1366 * s) / 2
+      const y = (window.innerHeight - 768 * s) / 2
+      setTransform(`translate(${x}px, ${y}px) scale(${s})`)
+    }
+    fit()
+    window.addEventListener('resize', fit)
+    return () => window.removeEventListener('resize', fit)
+  }, [])
+  return (
+    <div className="viewport">
+      <div className="stage" style={{ transform }}>
+        {children}
+      </div>
+    </div>
+  )
+}
 
 export default function App(): JSX.Element {
   const [screen, setScreen] = useState<Screen>('login')
-  const [reconnecting, setReconnecting] = useState(false)
-  const user = useSessionStore((s) => s.user)
-  const setUser = useSessionStore((s) => s.setUser)
-  const connected = useMachineStore((s) => s.connected)
+  const setUser = useMachine((s) => s.setUser)
 
-  useEffect(() => connectMachineEvents(), [])
+  useEffect(() => connectMachine(), [])
 
-  const handleLogout = async (): Promise<void> => {
+  const quit = (): void => void api.app.quit()
+  const logout = async (): Promise<void> => {
     await api.auth.logout()
     setUser(null)
     setScreen('login')
   }
-
-  const leaveSettings = async (): Promise<void> => {
+  const home = async (): Promise<void> => {
     await api.auth.adminLock()
-    setScreen('home')
-  }
-
-  const reconnect = async (): Promise<void> => {
-    setReconnecting(true)
-    const result = await api.hardware.reconnect()
-    setReconnecting(false)
-    if (result.ok) toast.success('Machine connected.')
-    else toast.error(result.message)
+    setScreen('main')
   }
 
   return (
-    <div className="app">
-      <TitleBar />
-      {!connected && screen !== 'login' && (
-        <div className="disconnect-banner">
-          <span>MACHINE DISCONNECTED — check power and the Ethernet cable. Retrying automatically…</span>
-          <button className="btn small" onClick={reconnect} disabled={reconnecting}>
-            {reconnecting ? 'CONNECTING…' : 'RECONNECT NOW'}
-          </button>
-        </div>
-      )}
-      <div className="screen">
+    <Stage>
+      <div data-screen={screen} style={{ position: 'absolute', inset: 0 }}>
         {screen === 'login' && (
           <LoginScreen
-            onLogin={(account) => {
-              setUser(account)
-              setScreen('home')
+            onLogin={(user) => {
+              setUser(user)
+              setScreen('main')
             }}
+            onExit={quit}
           />
         )}
-        {screen === 'home' && user && (
-          <HomeScreen
-            user={user}
-            onOpenSettings={() => setScreen('settings')}
-            onLogout={handleLogout}
-          />
-        )}
-        {screen === 'settings' && user && (
-          <SettingsScreen onHome={leaveSettings} onLogout={handleLogout} />
-        )}
+        {screen === 'main' && <HomeScreen onSettings={() => setScreen('settings')} onLogout={() => void logout()} onClose={quit} />}
+        {screen === 'settings' && <SettingsScreen onHome={() => void home()} onLogout={() => void logout()} onClose={quit} />}
       </div>
-      <ToastStack />
-    </div>
+      <MessageBoxHost />
+    </Stage>
   )
 }

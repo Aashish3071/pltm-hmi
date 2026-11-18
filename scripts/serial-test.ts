@@ -11,23 +11,14 @@ import { existsSync, mkdirSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { SerialPort } from 'serialport'
-import { HardwareStatus, type HardwareConfig } from '@shared/types'
+import { StatusCode, type HardwareConfig } from '@shared/types'
 import { closeDb, initDb } from '../src/main/db'
-import { modelsRepo, settingsRepo, testRunsRepo } from '../src/main/db/repositories'
-import { DEFAULT_CONNECTION, DEFAULT_REGISTER_MAP } from '../src/main/hardware/config'
+import { modelsRepo, settingsRepo } from '../src/main/db/repositories'
+import { DEFAULT_HARDWARE_CONFIG } from '../src/main/hardware/config'
 import { getHardware, initHardware } from '../src/main/hardware/HardwareManager'
 import { setHardwareConfig, testHardwareConfig } from '../src/main/services/configService'
-import {
-  CommandError,
-  finishRun,
-  homeMachine,
-  jogMachine,
-  recordCycle,
-  recordTelemetry,
-  resetMachine,
-  startRun,
-  stopRun
-} from '../src/main/services/testRunService'
+import { CommandError } from '../src/main/errors'
+import * as tests from '../src/main/services/testService'
 import { FakePlc } from './fakePlc'
 
 const dir = join(tmpdir(), 'pltm-serial-test')
@@ -92,41 +83,43 @@ async function attachPlc(plc: FakePlc): Promise<SerialPort> {
   return port
 }
 
+function code(): number {
+  const st = getHardware().getState()
+  return st.connected ? st.code : 100
+}
+
 async function main(): Promise<void> {
   rmSync(dir, { recursive: true, force: true })
   mkdirSync(join(dir, 'profile'), { recursive: true })
   app.setPath('userData', join(dir, 'profile'))
-  initDb()
-  settingsRepo.setSpeeds({ up: 2000, down: 2000, jog: 1000 })
+  initDb(join(dir, 'pltm.db'))
+  settingsRepo.set('hardware_config', JSON.stringify({ ...DEFAULT_HARDWARE_CONFIG, driver: 'simulator' }))
+  settingsRepo.setSpeeds({ up: 500, down: 500, jog: 200 })
 
   let cable = await startVirtualCable()
   const plc = new FakePlc()
+  const ref3600 = modelsRepo.list().find((m) => m.name === 'PANTO-3600')!
+  plc.plc.setModel(ref3600)
   let plcPort = await attachPlc(plc)
 
   const hardware = initHardware()
-  hardware.on('status', (status) => {
-    if ([HardwareStatus.READY, HardwareStatus.OVERLOAD, HardwareStatus.DISCONNECTED].includes(status)) {
-      finishRun(status)
-    }
-  })
-  hardware.on('telemetry', (frame) => recordTelemetry(frame))
-  hardware.on('cycle-complete', (event) => recordCycle(event.phase, event.elapsedSec))
+  hardware.on('state', (state) => tests.onState(state))
+  tests.initTestService()
 
   const config: HardwareConfig = {
+    ...DEFAULT_HARDWARE_CONFIG,
     driver: 'modbus',
-    connection: {
-      ...DEFAULT_CONNECTION,
-      transport: 'rtu-serial',
-      serialPath: APP_TTY,
-      baudRate: 9600,
-      parity: 'none',
-      dataBits: 8,
-      stopBits: 1,
-      unitId: 1,
-      timeoutMs: 500,
-      pollIntervalMs: 100
-    },
-    registerMap: DEFAULT_REGISTER_MAP
+    modbus: {
+      ...DEFAULT_HARDWARE_CONFIG.modbus,
+      connection: {
+        ...DEFAULT_HARDWARE_CONFIG.modbus.connection,
+        transport: 'rtu-serial',
+        serialPath: APP_TTY,
+        baudRate: 9600,
+        timeoutMs: 500,
+        pollIntervalMs: 50
+      }
+    }
   }
 
   console.log('\nSerial port discovery')
@@ -136,61 +129,45 @@ async function main(): Promise<void> {
   console.log('\nConnection test over the serial line')
   const writesBefore = plc.writes
   const probe = await testHardwareConfig(config)
-  check('probe reads status over RTU serial', probe.status === HardwareStatus.HOMING_NOT_DONE, `(${probe.status})`)
+  check('probe reads status over RTU serial', probe.status === 'HOMING NOT DONE', `(${probe.status})`)
   check('probe is read-only', plc.writes === writesBefore)
-  check('probe releases the COM port (reopen works)', (await testHardwareConfig(config)).status === HardwareStatus.HOMING_NOT_DONE)
+  check('probe releases the COM port (reopen works)', (await testHardwareConfig(config)).status === 'HOMING NOT DONE')
 
   console.log('\nConfiguration errors give clear messages')
+  const c = config.modbus.connection
   await expectError('missing COM port reported', 'ERR_CONNECTION_FAILED', () =>
-    testHardwareConfig({ ...config, connection: { ...config.connection, serialPath: join(dir, 'COM99') } })
+    testHardwareConfig({ ...config, modbus: { ...config.modbus, connection: { ...c, serialPath: join(dir, 'COM99') } } })
   )
   await expectError('wrong slave ID reported as no response', 'ERR_CONNECTION_FAILED', () =>
-    testHardwareConfig({ ...config, connection: { ...config.connection, unitId: 7 } })
+    testHardwareConfig({ ...config, modbus: { ...config.modbus, connection: { ...c, unitId: 7 } } })
   )
   await expectError('register outside the PLC range reported as a Modbus exception', 'ERR_CONNECTION_FAILED', () =>
-    testHardwareConfig({ ...config, registerMap: { ...DEFAULT_REGISTER_MAP, status: { area: 'input', address: 900 } } }),
+    testHardwareConfig({ ...config, modbus: { ...config.modbus, map: { ...config.modbus.map, status: { area: 'holding', address: 900 } } } }),
     'xception'
   )
 
   console.log('\nOperation over RS-485 (virtual)')
   await setHardwareConfig(config)
-  check('driver connects on the COM port', await waitFor(() => hardware.getSnapshot().connected, 5000))
+  check('driver connects on the COM port', await waitFor(() => hardware.getState().connected, 5000))
   hardware.startSupervision()
-  check('speeds written over serial', await waitFor(() => plc.holding[0] === 20000, 2000), `(${plc.holding[0]})`)
-
-  const model = modelsRepo.list()[0]
-  const request = { modelId: model.id, employeeUserId: 1, partNo: 'RS485-001' }
-  await homeMachine()
-  check('HOMING over serial', await waitFor(() => hardware.getSnapshot().status === HardwareStatus.READY, 3000))
-  await startRun(request)
-  check('travel distance written over serial', plc.travelMm === model.distanceMm)
-  check('test raises', await waitFor(() => hardware.getSnapshot().status === HardwareStatus.PANTO_RAISING, 2000))
-  await waitFor(() => hardware.getSnapshot().heightMm > 500, 5000)
-  await stopRun()
-  check('STOP over serial', await waitFor(() => hardware.getSnapshot().status === HardwareStatus.HALT, 2000))
-  await startRun(request)
-  check('RESUME over serial', await waitFor(() => hardware.getSnapshot().status !== HardwareStatus.HALT, 2000))
-  check('full cycle completes', await waitFor(() => hardware.getSnapshot().status === HardwareStatus.READY, 20000))
-  const run = testRunsRepo.lastCompleted()
-  check('run recorded with telemetry', run?.resultStatus === 'COMPLETED' && testRunsRepo.points(run.id).length > 10)
-
-  plc.manualMode = true
-  await waitFor(() => hardware.getSnapshot().mode === 'MANUAL', 2000)
-  await resetMachine()
-  await jogMachine('UP', true)
-  check('jog command over serial', await waitFor(() => plc.coils[4] === 1, 1000))
-  check('jog watchdog releases over serial', await waitFor(() => plc.coils[4] === 0, 2000))
-  plc.manualMode = false
-  await waitFor(() => hardware.getSnapshot().mode === 'AUTO', 2000)
+  tests.select(ref3600.id, 'RS485-001')
+  await tests.home()
+  check('HOMING over serial', await waitFor(() => code() === StatusCode.READY, 5000), `(${code()})`)
+  await tests.start()
+  check('test raises', await waitFor(() => code() === StatusCode.PANTO_RAISING, 2000))
+  await waitFor(() => hardware.getState().positionMm > 500, 5000)
+  await tests.stop()
+  check('STOP over serial', await waitFor(() => code() === StatusCode.HALT, 2000))
+  await tests.start()
+  check('RESUME over serial', await waitFor(() => code() === StatusCode.PANTO_RAISING, 2000))
+  check('full cycle completes', await waitFor(() => code() === StatusCode.CYCLE_COMPLETED, 30000))
+  check('test recorded', tests.getHistory().n.length > 50)
 
   console.log('\nUSB adapter unplugged and replugged')
-  await homeMachine()
-  await waitFor(() => hardware.getSnapshot().status === HardwareStatus.READY, 2000)
-  settingsRepo.setSpeeds({ up: 200, down: 200, jog: 1000 })
-  await hardware.setSpeeds({ up: 200, down: 200, jog: 1000 })
-  await startRun(request)
-  await waitFor(() => hardware.getSnapshot().status === HardwareStatus.PANTO_RAISING, 2000)
-  // A real unplug: the device vanishes; nothing is closed gracefully first.
+  await tests.reset()
+  await waitFor(() => code() === StatusCode.READY, 3000)
+  await tests.start()
+  await waitFor(() => code() === StatusCode.PANTO_RAISING, 2000)
   let maxStallMs = 0
   let lastTick = Date.now()
   const stallProbe = setInterval(() => {
@@ -199,18 +176,16 @@ async function main(): Promise<void> {
   }, 20)
   cable.kill('SIGKILL')
   const unpluggedAt = Date.now()
-  console.log(`        (unplugged at ${new Date(unpluggedAt).toISOString()})`)
-  const detected = await waitFor(() => !hardware.getSnapshot().connected, 8000)
+  const detected = await waitFor(() => !hardware.getState().connected, 8000)
   check('unplug detected within 8 s', detected, `(${Date.now() - unpluggedAt} ms)`)
   clearInterval(stallProbe)
   check('app stays responsive during unplug', maxStallMs < 500, `(event loop stalled ${maxStallMs} ms)`)
+  check('status shows ETHERNET DISCONNECTED (code 100)', code() === 100)
   plcPort.destroy()
-  check('run in progress closed as DISCONNECTED', testRunsRepo.lastCompleted()?.resultStatus === HardwareStatus.DISCONNECTED)
   await sleep(1000)
   cable = await startVirtualCable()
   plcPort = await attachPlc(plc)
-  check('reconnects after replug', await waitFor(() => hardware.getSnapshot().connected, 10000))
-  check('live readings resume', await waitFor(() => hardware.getSnapshot().status !== HardwareStatus.DISCONNECTED, 2000))
+  check('reconnects after replug', await waitFor(() => hardware.getState().connected, 10000))
 
   hardware.stopSupervision()
   await getHardware().disconnect()

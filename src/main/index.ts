@@ -4,9 +4,9 @@ import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import { IPC } from '@shared/types'
 import { closeDb, initDb } from './db'
 import { getHardware, initHardware } from './hardware/HardwareManager'
-import { broadcast, onRunStatusChange, registerIpcHandlers } from './ipc/handlers'
+import { broadcast, registerIpcHandlers } from './ipc/handlers'
 import { log } from './logger'
-import { abortActiveRun, recordCycle, recordTelemetry } from './services/testRunService'
+import { initTestService, onState, shutdown as shutdownTests } from './services/testService'
 
 // Two instances would contend for the database and the machine's COM port.
 if (!app.requestSingleInstanceLock()) {
@@ -24,14 +24,14 @@ if (!app.requestSingleInstanceLock()) {
 
 function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
-    width: 1280,
-    height: 800,
+    width: 1366,
+    height: 768,
     minWidth: 1024,
-    minHeight: 700,
+    minHeight: 600,
     show: false,
     autoHideMenuBar: true,
-    backgroundColor: '#1e293b',
-    title: 'Pantograph Load Test Machine',
+    backgroundColor: '#12263a',
+    title: 'PantoCheck',
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -67,19 +67,7 @@ function createWindow(): BrowserWindow {
 
 function wireHardwareEvents(): void {
   const hardware = getHardware()
-  hardware.on('telemetry', (frame) => {
-    recordTelemetry(frame)
-    broadcast(IPC.EVT_TELEMETRY, frame)
-  })
-  hardware.on('status', (status) => {
-    onRunStatusChange(status)
-    broadcast(IPC.EVT_STATUS, status)
-  })
-  hardware.on('connection', (event) => broadcast(IPC.EVT_CONNECTION, event))
-  hardware.on('cycle-complete', (event) => {
-    recordCycle(event.phase, event.elapsedSec)
-    broadcast(IPC.EVT_CYCLE_COMPLETE, event)
-  })
+  hardware.on('state', (state) => broadcast(IPC.EVT_MACHINE, onState(state)))
 }
 
 function bootstrap(): void {
@@ -87,7 +75,7 @@ function bootstrap(): void {
   process.on('unhandledRejection', (reason) => log.error('Unhandled rejection', reason))
 
   app.whenReady().then(async () => {
-    electronApp.setAppUserModelId('com.novatek.pltm')
+    electronApp.setAppUserModelId('com.pantocheck.app')
     app.on('browser-window-created', (_, window) => optimizer.watchWindowShortcuts(window))
 
     try {
@@ -95,15 +83,16 @@ function bootstrap(): void {
     } catch (error) {
       log.error('Database failed to open', error)
       dialog.showErrorBox(
-        'PLTM HMI cannot start',
+        'PantoCheck cannot start',
         `The local database could not be opened.\n\n${error instanceof Error ? error.message : String(error)}`
       )
       app.exit(1)
       return
     }
 
-    log.info(`Starting PLTM HMI ${app.getVersion()}`)
+    log.info(`Starting PantoCheck ${app.getVersion()}`)
     const hardware = initHardware()
+    initTestService()
     registerIpcHandlers()
     wireHardwareEvents()
     // Connection failures are not fatal: the UI shows DISCONNECTED and the
@@ -129,7 +118,7 @@ function bootstrap(): void {
     event.preventDefault()
     void (async () => {
       try {
-        await abortActiveRun()
+        shutdownTests()
         const hardware = getHardware()
         hardware.stopSupervision()
         await hardware.disconnect()

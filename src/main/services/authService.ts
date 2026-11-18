@@ -12,11 +12,16 @@ const session: { user: UserAccount | null; adminUnlocked: boolean } = {
   adminUnlocked: false
 }
 
+function toAccount(row: { id: number; slot: string; display_name: string; role: 'admin' | 'operator' }): UserAccount {
+  return { id: row.id, slot: row.slot, displayName: row.display_name, role: row.role }
+}
+
+/** The name must be one of the four employees, with that employee's password. */
 export function login(username: string, password: string): UserAccount | null {
-  const row = usersRepo.findByName(String(username ?? '').trim())
+  const row = usersRepo.findByName(String(username ?? ''))
   if (!row) return null
   if (!bcrypt.compareSync(String(password ?? ''), row.password_hash)) return null
-  return { id: row.id, slot: row.slot, displayName: row.display_name, role: row.role }
+  return toAccount(row)
 }
 
 export function startSession(user: UserAccount): void {
@@ -33,16 +38,16 @@ export function currentUser(): UserAccount | null {
   return session.user
 }
 
-export function isAdminPassword(password: string): boolean {
-  const admin = usersRepo.list().find((u) => u.role === 'admin')
-  if (!admin) return false
-  const row = usersRepo.findById(admin.id)
-  return !!row && bcrypt.compareSync(String(password ?? ''), row.password_hash)
-}
-
-/** The settings page needs the admin password even when someone else is logged in. */
-export function unlockAdmin(password: string): boolean {
-  if (!session.user || !isAdminPassword(password)) return false
+/**
+ * The first employee's name and password open Settings,
+ * whoever is logged in.
+ */
+export function unlockAdmin(username: string, password: string): boolean {
+  if (!session.user) return false
+  const first = usersRepo.list()[0]
+  if (!first || first.displayName !== String(username ?? '')) return false
+  const row = usersRepo.findById(first.id)
+  if (!row || !bcrypt.compareSync(String(password ?? ''), row.password_hash)) return false
   session.adminUnlocked = true
   return true
 }

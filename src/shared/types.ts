@@ -1,91 +1,95 @@
-/** Machine status values, mirroring the PLTM user manual's status table. */
-export const HardwareStatus = {
-  DISCONNECTED: 'DISCONNECTED',
-  READY: 'READY',
-  EMERGENCY_PRESSED: 'EMERGENCY PRESSED',
-  SERVO_ERROR: 'SERVO ERROR',
-  OVERLOAD: 'OVERLOAD',
-  SERVO_OFF: 'SERVO OFF',
-  HOMING_NOT_DONE: 'HOMING NOT DONE',
-  HALT: 'HALT',
-  PANTO_RAISING: 'PANTO RAISING',
-  PANTO_RAISING_COMPLETED: 'PANTO RAISING COMPLETED',
-  PANTO_RETRIEVING: 'PANTO RETRIVING',
-  /** A travel limit switch was reached. */
-  OVER_TRAVEL: 'OVER TRAVEL'
-} as const
-export type HardwareStatus = (typeof HardwareStatus)[keyof typeof HardwareStatus]
+// ---------------------------------------------------------------------------
+// PLC status codes.
+// The PLC writes the code as the third field of its status string.
+// ---------------------------------------------------------------------------
 
-/** Statuses that represent a fault the operator must clear before running. */
-export const FAULT_STATUSES: HardwareStatus[] = [
-  HardwareStatus.EMERGENCY_PRESSED,
-  HardwareStatus.SERVO_ERROR,
-  HardwareStatus.OVERLOAD,
-  HardwareStatus.SERVO_OFF,
-  HardwareStatus.OVER_TRAVEL
+export const StatusCode = {
+  READY: 0,
+  EMERGENCY_PRESSED: 1,
+  SERVO_ERROR: 11,
+  OVERLOAD: 21,
+  SERVO_OFF: 31,
+  HOMING_NOT_DONE: 41,
+  HALT: 51,
+  PANTO_RAISING: 61,
+  PANTO_RAISING_COMPLETED: 71,
+  PANTO_RETRIEVING: 81,
+  CYCLE_COMPLETED: 91,
+  /** Not sent by the PLC: shown when the app cannot reach it. */
+  ETHERNET_DISCONNECTED: 100
+} as const
+export type StatusCode = (typeof StatusCode)[keyof typeof StatusCode]
+
+/** Status-bar texts. */
+export const STATUS_TEXT: Record<number, string> = {
+  0: 'READY',
+  1: 'EMERGENCY PRESSED',
+  11: 'SERVO ERROR',
+  21: 'OVERLOAD',
+  31: 'SERVO OFF',
+  41: 'HOMING NOT DONE',
+  51: 'HALT',
+  61: 'PANTO RAISING',
+  71: 'PANTO RAISING COMPLETED',
+  81: 'PANTO RETRIEVING',
+  91: 'CYCLE COMPLETED',
+  100: 'ETHERNET DISCONNECTED'
+}
+
+/** Codes recorded on the raising (up) branch of the curve, and on the lowering branch. */
+export const RAISING_CODES: number[] = [StatusCode.PANTO_RAISING, StatusCode.PANTO_RAISING_COMPLETED]
+export const LOWERING_CODES: number[] = [StatusCode.PANTO_RETRIEVING]
+/** Codes that light the alarm bell. */
+export const ALARM_CODES: number[] = [
+  StatusCode.EMERGENCY_PRESSED,
+  StatusCode.SERVO_ERROR,
+  StatusCode.OVERLOAD,
+  StatusCode.SERVO_OFF,
+  StatusCode.HOMING_NOT_DONE,
+  StatusCode.ETHERNET_DISCONNECTED
 ]
 
-export type MachineMode = 'AUTO' | 'MANUAL'
-export type RunPhase = 'idle' | 'up' | 'down'
-export type JogDirection = 'UP' | 'DOWN'
+export function statusText(state: Pick<PlcState, 'connected' | 'code'>): string {
+  if (!state.connected) return STATUS_TEXT[StatusCode.ETHERNET_DISCONNECTED]
+  return STATUS_TEXT[state.code] ?? ''
+}
 
-export interface TelemetryFrame {
+export type MachineMode = 'MANUAL' | 'AUTO'
+
+/** One poll of the PLC: the six values of its status string, decoded. */
+export interface PlcState {
+  connected: boolean
   timestampMs: number
-  /** ms since the current run started; 0 when idle. */
-  tMs: number
-  /** Calibrated load. */
   loadN: number
-  /** Load before the calibration correction — what calibration captures. */
-  loadRawN: number
-  heightMm: number
-  phase: RunPhase
-  /** Live cycle timers, excluding time spent in HALT. */
-  upCycleSec: number
-  downCycleSec: number
-  /** Carried on every frame so pendant-driven changes reach the UI promptly. */
-  mode: MachineMode
-  homed: boolean
+  positionMm: number
+  code: number
+  upTimeSec: number
+  downTimeSec: number
+  /** null when the PLC does not report it. */
+  mode: MachineMode | null
 }
 
-export interface HardwareSnapshot {
-  connected: boolean
-  status: HardwareStatus
-  mode: MachineMode
-  homed: boolean
-  /** True when RESET has been pressed since the last completed run. */
-  resetSinceLastRun: boolean
+/** Pushed to the renderer on every poll. */
+export interface MachineEvent {
+  state: PlcState
+  /** The poll was appended to the current test (n) — the graph adds it. */
+  recorded: boolean
+  /** Bumped whenever the n / n-1 / n-2 history changes (START of a new test, RESET). */
+  historyVersion: number
+}
+
+/** A recorded reading: load (N), position (mm) and the PLC status code at the time. */
+export interface Sample {
   loadN: number
-  heightMm: number
-  phase: RunPhase
-  upCycleSec: number
-  downCycleSec: number
-  /** Set while a run is in progress or paused; null once reset. */
-  activeModelId: number | null
-  loadRawN: number
-  safety: SafetyState
+  positionMm: number
+  code: number
 }
 
-/**
- * Safety signals as reported by the machine's PLC (or the simulator).
- * `null` = that signal is not mapped, so the app cannot see it.
- */
-export interface SafetyState {
-  estop: boolean | null
-  overloadTrip: boolean | null
-  upperLimit: boolean | null
-  lowerLimit: boolean | null
-  /** The app is feeding the PLC's communication watchdog. */
-  heartbeat: boolean
-  source: 'plc' | 'simulator'
-}
-
-export interface CycleCompleteEvent {
-  phase: 'up' | 'down'
-  elapsedSec: number
-}
-
-export interface ConnectionEvent {
-  connected: boolean
+export interface GraphHistory {
+  version: number
+  n: Sample[]
+  n1: Sample[]
+  n2: Sample[]
 }
 
 export interface SpeedSettings {
@@ -103,7 +107,15 @@ export interface ModelPoint {
 export interface ModelConfig {
   id: number
   name: string
+  /** Travel distance — the 4th height point. */
   distanceMm: number
+  points: ModelPoint[]
+}
+
+export interface ModelDraft {
+  /** The model being edited (the one selected on the Home screen). */
+  id?: number
+  name: string
   points: ModelPoint[]
 }
 
@@ -114,32 +126,97 @@ export interface UserAccount {
   role: 'admin' | 'operator'
 }
 
+/** What the Home screen shows from the last OK. */
+export interface Selection {
+  modelId: number
+  modelName: string
+  partNo: string
+}
+
+export interface TestResults {
+  avgUpN: number
+  avgDownN: number
+  meanN: number
+  peakFrictionN: number
+  hysteresisN: number
+  maxHeightMm: number
+  /** Heights the averages were taken between. */
+  windowFromMm: number
+  windowToMm: number
+}
+
+export interface CompanyInfo {
+  name: string
+  addressLine1: string
+  addressLine2: string
+}
+
+export interface MachineSettings {
+  machineId: string
+  loadCapacityKg: number
+  heightCapacityMm: number
+  company: CompanyInfo
+  /** Printed as "speed of meas." on the report. */
+  measurementSpeedText: string
+}
+
 export interface SystemInfo {
   machineId: string
   deviceIp: string
-  loadCapacityN: number
+  loadCapacityKg: number
   heightCapacityMm: number
   appVersion: string
   driver: HardwareDriver
 }
 
-export interface MachineSettings {
-  machineId: string
-  loadCapacityN: number
-  heightCapacityMm: number
-  /** Printed on test certificates. */
-  companyName: string
-  companyAddress: string
+// ---------------------------------------------------------------------------
+// Hardware drivers
+// ---------------------------------------------------------------------------
+
+export type HardwareDriver = 'simulator' | 's7' | 'modbus'
+
+/** Siemens S7 over Ethernet (ISO-on-TCP, port 102). */
+export interface S7Connection {
+  host: string
+  port: number
+  rack: number
+  slot: number
+  timeoutMs: number
+  pollIntervalMs: number
 }
 
-/** Upper bound for any configured speed, in mm/s. */
-export const MAX_SPEED_MM_S = 500
+export interface S7Bit {
+  byte: number
+  bit: number
+}
 
-// ---------------------------------------------------------------------------
-// Hardware driver configuration
-// ---------------------------------------------------------------------------
+export interface S7Command extends S7Bit {
+  /** > 0: set the bit, then clear it after this delay. 0: set it and leave it for the PLC to clear. */
+  pulseMs: number
+}
 
-export type HardwareDriver = 'simulator' | 'modbus'
+/** Addresses inside the PLC's data block. REAL values are 4-byte big-endian floats. */
+export interface S7Map {
+  dbNumber: number
+  /** STRING holding "load×100 position status uptime downtime mode". */
+  statusString: { offset: number; maxLength: number }
+  /** The first field is load × this divisor. */
+  loadDivisor: number
+  commands: {
+    start: S7Command
+    /** STOP sets this bit; START clears it again (resume). */
+    stop: S7Bit
+    reset: S7Command
+    home: S7Command
+  }
+  /** REAL byte offsets, or null when not written. */
+  writes: {
+    upSpeed: number | null
+    downSpeed: number | null
+    jogSpeed: number | null
+    distance: number | null
+  }
+}
 
 /**
  * rtu-serial: Modbus RTU on a COM port (RS-485/RS-232 adapter).
@@ -175,27 +252,6 @@ export interface RegisterSpec {
   scale?: number
 }
 
-/** A digital signal read from the PLC; `activeValue` (default 1) means the condition is present. */
-export interface SignalSpec extends RegisterSpec {
-  activeValue?: number
-}
-
-/**
- * Safety functions live in the PLC and its wiring; these are how the app sees
- * them. See docs/plc-safety-requirements.md.
- */
-export interface SafetyMap {
-  /** E-stop chain open (pressed). */
-  estop: SignalSpec | null
-  /** PLC overload trip latched. */
-  overloadTrip: SignalSpec | null
-  /** Upper / lower over-travel limit switch reached. */
-  upperLimit: SignalSpec | null
-  lowerLimit: SignalSpec | null
-  /** Holding register the app increments every 500 ms; the PLC stops motion if it stalls. */
-  heartbeat: RegisterSpec | null
-}
-
 /** A command written to the PLC. `pulseMs` > 0 writes `value`, then 0 after the delay. */
 export interface CommandSpec {
   area: 'coil' | 'holding'
@@ -204,44 +260,36 @@ export interface CommandSpec {
   pulseMs?: number
 }
 
-export interface RegisterMap {
+/** The same six values as the S7 status string, one register each. */
+export interface ModbusMap {
   load: RegisterSpec
   position: RegisterSpec
+  /** Holds the status code (0, 1, 11 … 91). */
   status: RegisterSpec
-  /** Raw status register value -> machine status. */
-  statusCodes: Record<string, HardwareStatus>
+  upTime: RegisterSpec | null
+  downTime: RegisterSpec | null
+  /** 1 = MANUAL, 2 = AUTO. */
   mode: RegisterSpec | null
-  /** Raw mode value meaning MANUAL; anything else is AUTO. */
-  manualModeValue: number
-  homed: RegisterSpec | null
   commands: {
     start: CommandSpec
     stop: CommandSpec
+    /** Written by START before the start command (clears a STOP). */
+    resume: CommandSpec | null
     reset: CommandSpec
     home: CommandSpec
-    jogUp: CommandSpec | null
-    jogDown: CommandSpec | null
-    modeAuto: CommandSpec | null
-    modeManual: CommandSpec | null
   }
   writes: {
     upSpeed: RegisterSpec | null
     downSpeed: RegisterSpec | null
     jogSpeed: RegisterSpec | null
-    /** Travel distance (row 4 height), written before each START. */
-    travelDistance: RegisterSpec | null
-    /** Load capacity (N) the PLC trips at; written on connect and when changed. */
-    overloadLimit: RegisterSpec | null
-    /** Height capacity (mm), the PLC's soft travel limit; written on connect and when changed. */
-    travelLimit: RegisterSpec | null
+    distance: RegisterSpec | null
   }
-  safety: SafetyMap
 }
 
 export interface HardwareConfig {
   driver: HardwareDriver
-  connection: ModbusConnection
-  registerMap: RegisterMap
+  s7: { connection: S7Connection; map: S7Map }
+  modbus: { connection: ModbusConnection; map: ModbusMap }
 }
 
 export interface SerialPortInfo {
@@ -253,167 +301,49 @@ export interface SerialPortInfo {
   chip?: string
 }
 
-// ---------------------------------------------------------------------------
-// Load-cell calibration
-// ---------------------------------------------------------------------------
-
-export interface CalibrationPoint {
-  /** Known applied force from the reference weight or reference load cell. */
-  referenceN: number
-  /** Averaged raw reading captured for it. */
-  rawN: number
-  /** Reading after applying this calibration. */
-  correctedN: number
-  errorN: number
-}
-
-export interface Calibration {
-  id: number
-  performedAt: string
-  performedBy: string
-  /** corrected = gain × raw + offset */
-  gain: number
-  offset: number
-  points: CalibrationPoint[]
-  maxErrorN: number
-  maxPermissibleErrorN: number
-  passed: boolean
-  referenceDevice: string
-  referenceCertificateNo: string
-  /** YYYY-MM-DD */
-  dueDate: string
-  notes: string
-}
-
-/** The accredited (NABL / ISO/IEC 17025) certificate for the bench's load cell. */
-export interface LoadCellCertificate {
-  id: number
-  labName: string
-  accreditationNo: string
-  certificateNo: string
-  loadCellSerial: string
-  /** YYYY-MM-DD */
-  calibratedOn: string
-  /** YYYY-MM-DD */
-  validUntil: string
-  uncertainty: string
-  fileName: string | null
-}
-
-export type ValidityState = 'ok' | 'due-soon' | 'overdue' | 'missing'
-
-export interface CalibrationPolicy {
-  /** What happens when calibration or the certificate is overdue or missing. */
-  enforcement: 'warn' | 'block'
-  intervalMonths: number
-  maxPermissibleErrorN: number
-}
-
-export interface CalibrationStatus {
-  calibration: Calibration | null
-  certificate: LoadCellCertificate | null
-  calibrationState: ValidityState
-  certificateState: ValidityState
-  daysToCalibrationDue: number | null
-  daysToCertificateDue: number | null
-  policy: CalibrationPolicy
-  /** Calibration is enforced on the real machine only, not on the simulator. */
-  applies: boolean
-  /** Tests are blocked right now because of calibration. */
-  blocking: boolean
-}
-
-export interface CalibrationCapture {
-  rawN: number
-  stdDevN: number
-  samples: number
-  stable: boolean
-}
-
-export interface CalibrationDraft {
-  points: { referenceN: number; rawN: number }[]
-  referenceDevice: string
-  referenceCertificateNo: string
-  notes: string
-}
-
-export interface CertificateDraft {
-  labName: string
-  accreditationNo: string
-  certificateNo: string
-  loadCellSerial: string
-  calibratedOn: string
-  validUntil: string
-  uncertainty: string
+export interface ConnectionTestResult {
+  status: string
+  loadN: number
+  positionMm: number
 }
 
 export interface ReportResult {
   excelPath: string
   pdfPath: string
-  certificateNo: string
+  jsonPath: string
 }
 
-export interface TestRunSummary {
-  id: number
-  employeeName: string | null
-  modelName: string | null
-  partNo: string | null
-  startedAt: string
-  endedAt: string | null
-  upCycleSec: number | null
-  downCycleSec: number | null
-  maxLoadN: number | null
-  resultStatus: string | null
-  reportPath: string | null
+/** Message boxes: an icon, a title and a text. */
+export interface MessageInfo {
+  icon: 'information' | 'critical' | 'warning'
+  title: string
+  text: string
 }
 
-export interface StartRunRequest {
-  modelId: number
-  employeeUserId: number
-  partNo: string
-}
-
-/** Error codes returned by machine commands; the renderer maps these to messages. */
+/** Error codes returned by commands; the renderer shows the message in a message box. */
 export const ErrorCode = {
-  NOT_HOMED: 'ERR_NOT_HOMED',
-  RESET_REQUIRED: 'ERR_RESET_REQUIRED',
   HARDWARE_DISCONNECTED: 'ERR_HARDWARE_DISCONNECTED',
-  FAULT_ACTIVE: 'ERR_FAULT_ACTIVE',
-  ALREADY_RUNNING: 'ERR_ALREADY_RUNNING',
-  NOT_RUNNING: 'ERR_NOT_RUNNING',
-  MANUAL_MODE: 'ERR_MANUAL_MODE',
   NO_MODEL: 'ERR_NO_MODEL',
   INVALID_CREDENTIALS: 'ERR_INVALID_CREDENTIALS',
-  NO_COMPLETED_RUN: 'ERR_NO_COMPLETED_RUN',
-  HOMING_BLOCKED: 'ERR_HOMING_BLOCKED',
+  NO_TEST: 'ERR_NO_TEST',
   INVALID_INPUT: 'ERR_INVALID_INPUT',
   DUPLICATE_NAME: 'ERR_DUPLICATE_NAME',
   NOT_AUTHORIZED: 'ERR_NOT_AUTHORIZED',
   CONNECTION_FAILED: 'ERR_CONNECTION_FAILED',
-  CALIBRATION_REQUIRED: 'ERR_CALIBRATION_REQUIRED',
   INTERNAL: 'ERR_INTERNAL'
 } as const
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode]
 
 export const ERROR_MESSAGES: Record<ErrorCode, string> = {
-  [ErrorCode.HOMING_BLOCKED]: 'Cannot home while a test is in progress. Press RESET first.',
+  [ErrorCode.HARDWARE_DISCONNECTED]: 'ETHERNET DISCONNECTED. Check the PLC power and the Ethernet cable.',
+  [ErrorCode.NO_MODEL]: 'Select a model and press OK.',
+  [ErrorCode.INVALID_CREDENTIALS]: 'You have Entered Incorrect Password',
+  [ErrorCode.NO_TEST]: 'No test data to report. Run a test first.',
   [ErrorCode.INVALID_INPUT]: 'Invalid input.',
   [ErrorCode.DUPLICATE_NAME]: 'That name is already in use.',
   [ErrorCode.NOT_AUTHORIZED]: 'Administrator access is required for this action.',
   [ErrorCode.CONNECTION_FAILED]: 'Could not connect to the machine.',
-  [ErrorCode.CALIBRATION_REQUIRED]:
-    'Load-cell calibration or its certificate is overdue. An administrator must calibrate before testing.',
-  [ErrorCode.INTERNAL]: 'Unexpected error. Details were written to the application log.',
-  [ErrorCode.NOT_HOMED]: 'Homing not done. Press HOMING before starting a test.',
-  [ErrorCode.RESET_REQUIRED]: 'Press RESET before starting a new test cycle.',
-  [ErrorCode.HARDWARE_DISCONNECTED]: 'Machine is disconnected. Check power and the Ethernet cable.',
-  [ErrorCode.FAULT_ACTIVE]: 'A fault is active. Clear the fault and press RESET.',
-  [ErrorCode.ALREADY_RUNNING]: 'A test is already running.',
-  [ErrorCode.NOT_RUNNING]: 'No test is currently running.',
-  [ErrorCode.MANUAL_MODE]: 'Machine is in MANUAL mode. Switch to AUTO mode to run a test.',
-  [ErrorCode.NO_MODEL]: 'Select a model and press OK before starting a test.',
-  [ErrorCode.INVALID_CREDENTIALS]: 'Invalid username or password.',
-  [ErrorCode.NO_COMPLETED_RUN]: 'No completed test run available to report.'
+  [ErrorCode.INTERNAL]: 'Unexpected error. Details were written to the application log.'
 }
 
 /** Uniform result shape for every invoke-style IPC call. */
@@ -429,18 +359,17 @@ export const IPC = {
   AUTH_ADMIN_LOCK: 'auth:admin-lock',
 
   USERS_LIST: 'users:list',
-  USERS_RENAME: 'users:rename',
+  USERS_SAVE_NAMES: 'users:save-names',
   USERS_CHANGE_PASSWORD: 'users:change-password',
 
   MODELS_LIST: 'models:list',
   MODELS_SAVE: 'models:save',
-  MODELS_DELETE: 'models:delete',
 
-  SETTINGS_GET_ALL: 'settings:get-all',
-  SETTINGS_SET_SPEEDS: 'settings:set-speeds',
+  SETTINGS_GET: 'settings:get',
+  SETTINGS_UPLOAD: 'settings:upload',
+  SETTINGS_SET_MACHINE: 'settings:set-machine',
   SETTINGS_SET_REPORT_DIR: 'settings:set-report-dir',
   SETTINGS_PICK_REPORT_DIR: 'settings:pick-report-dir',
-  SETTINGS_SET_MACHINE: 'settings:set-machine',
 
   HARDWARE_GET_CONFIG: 'hardware:get-config',
   HARDWARE_SET_CONFIG: 'hardware:set-config',
@@ -448,33 +377,19 @@ export const IPC = {
   HARDWARE_LIST_PORTS: 'hardware:list-ports',
   HARDWARE_RECONNECT: 'hardware:reconnect',
 
-  MACHINE_SNAPSHOT: 'machine:snapshot',
+  MACHINE_STATE: 'machine:state',
+  MACHINE_SELECT: 'machine:select',
+  MACHINE_SELECTION: 'machine:selection',
   MACHINE_START: 'machine:start',
   MACHINE_STOP: 'machine:stop',
   MACHINE_RESET: 'machine:reset',
   MACHINE_HOME: 'machine:home',
-  MACHINE_SET_MODE: 'machine:set-mode',
-  MACHINE_JOG: 'machine:jog',
+  MACHINE_HISTORY: 'machine:history',
   MACHINE_FORCE_FAULT: 'machine:force-fault',
 
   REPORTS_GENERATE: 'reports:generate',
   REPORTS_OPEN_FOLDER: 'reports:open-folder',
-  REPORTS_LAST_RUN: 'reports:last-run',
-  REPORTS_RUN_POINTS: 'reports:run-points',
-
-  CAL_STATUS: 'calibration:status',
-  CAL_HISTORY: 'calibration:history',
-  CAL_CAPTURE: 'calibration:capture',
-  CAL_SAVE: 'calibration:save',
-  CAL_SET_POLICY: 'calibration:set-policy',
-  CAL_SIMULATE_LOAD: 'calibration:simulate-load',
-  CERT_SAVE: 'certificate:save',
-  CERT_ATTACH: 'certificate:attach',
-  CERT_OPEN: 'certificate:open',
 
   /** main -> renderer push events */
-  EVT_TELEMETRY: 'evt:telemetry',
-  EVT_STATUS: 'evt:status',
-  EVT_CONNECTION: 'evt:connection',
-  EVT_CYCLE_COMPLETE: 'evt:cycle-complete'
+  EVT_MACHINE: 'evt:machine'
 } as const

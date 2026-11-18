@@ -2,45 +2,33 @@ import { EventEmitter } from 'events'
 import type {
   HardwareConfig,
   HardwareDriver,
-  HardwareSnapshot,
-  JogDirection,
-  MachineMode,
   ModelConfig,
+  PlcState,
   SpeedSettings
 } from '@shared/types'
-import { calibrationsRepo, settingsRepo } from '../db/repositories'
+import { settingsRepo } from '../db/repositories'
 import { log } from '../logger'
-import {
-  DEFAULT_CONNECTION,
-  DEFAULT_REGISTER_MAP,
-  validateConnection,
-  validateDriver,
-  validateRegisterMap
-} from './config'
+import { DEFAULT_HARDWARE_CONFIG, validateHardwareConfig } from './config'
 import type { FaultKind, HardwareEvents, HardwareInterface } from './HardwareInterface'
 import { MockHardware } from './MockHardware'
 import { ModbusHardware } from './ModbusHardware'
+import { S7Hardware } from './S7Hardware'
 
 const RECONNECT_INTERVAL_MS = 3000
-/** A held jog button must be re-confirmed within this window or motion stops. */
-export const JOG_WATCHDOG_MS = 600
-
-const EVENTS: (keyof HardwareEvents)[] = ['telemetry', 'status', 'connection', 'cycle-complete']
+const EVENTS: (keyof HardwareEvents)[] = ['state', 'connection']
 
 /**
  * The single hardware object the rest of the app uses. It delegates to the
- * configured driver, can swap drivers at runtime, keeps reconnecting after a
- * link loss, and enforces a dead-man watchdog on manual jogging.
+ * configured driver, can swap drivers at runtime, and keeps reconnecting after
+ * a link loss (the UI shows ETHERNET DISCONNECTED meanwhile).
  */
 export class HardwareHub extends EventEmitter implements HardwareInterface {
   private driver: HardwareInterface
   private kind: HardwareDriver
-  private connecting = false
+  /** The driver a connect is in progress for (a slow connect to an old address must not block a new driver). */
+  private connecting: HardwareInterface | null = null
   private supervisor: NodeJS.Timeout | null = null
-  private watchdog: NodeJS.Timeout | null = null
-  private jogState: { direction: JogDirection; lastPing: number } | null = null
   private lastConnectError = ''
-  private calibration = { gain: 1, offset: 0 }
 
   constructor(driver: HardwareInterface, kind: HardwareDriver) {
     super()
@@ -53,91 +41,77 @@ export class HardwareHub extends EventEmitter implements HardwareInterface {
     return this.kind
   }
 
+  get connectError(): string {
+    return this.lastConnectError
+  }
+
   /** Replaces the active driver; the old one is disconnected and detached. */
   async setDriver(driver: HardwareInterface, kind: HardwareDriver): Promise<void> {
     const old = this.driver
-    this.jogState = null
     for (const event of EVENTS) old.removeAllListeners(event)
     await old.disconnect().catch(() => undefined)
     this.driver = driver
     this.kind = kind
     this.attach(driver)
-    driver.setLoadCalibration(this.calibration.gain, this.calibration.offset)
-    this.emit('connection', { connected: false })
+    this.emit('connection', false)
+    this.emit('state', driver.getState())
     await this.tryConnect()
   }
 
   private attach(driver: HardwareInterface): void {
     for (const event of EVENTS) {
-      ;(driver as EventEmitter).on(event, (payload: unknown) => {
-        if (event === 'connection' && !(payload as { connected: boolean }).connected) {
-          this.jogState = null
-        }
-        this.emit(event, payload)
-      })
+      ;(driver as EventEmitter).on(event, (payload: unknown) => this.emit(event, payload as never))
     }
+    // On every (re)connect the PLC gets the speeds saved now, not when the driver was made.
+    ;(driver as EventEmitter).on('connection', (connected: boolean) => {
+      if (!connected) return
+      void driver.writeSpeeds(settingsRepo.getSpeeds()).catch((error) =>
+        log.warn('Could not write speeds after connect', error instanceof Error ? error.message : String(error))
+      )
+    })
   }
 
-  /** Starts background reconnection and the jog watchdog. */
   startSupervision(): void {
-    if (!this.supervisor) {
-      this.supervisor = setInterval(() => {
-        if (!this.driver.getSnapshot().connected) void this.tryConnect()
-      }, RECONNECT_INTERVAL_MS)
-    }
-    if (!this.watchdog) {
-      this.watchdog = setInterval(() => this.checkJogWatchdog(), 100)
-    }
+    if (this.supervisor) return
+    this.supervisor = setInterval(() => {
+      if (!this.driver.getState().connected) void this.tryConnect()
+    }, RECONNECT_INTERVAL_MS)
   }
 
   stopSupervision(): void {
     if (this.supervisor) clearInterval(this.supervisor)
-    if (this.watchdog) clearInterval(this.watchdog)
     this.supervisor = null
-    this.watchdog = null
   }
 
   async tryConnect(): Promise<boolean> {
-    if (this.connecting || this.driver.getSnapshot().connected) return true
-    this.connecting = true
+    const driver = this.driver
+    if (this.connecting === driver || driver.getState().connected) return true
+    this.connecting = driver
     try {
-      await this.driver.connect()
+      await driver.connect()
+      if (driver !== this.driver) {
+        // Replaced while connecting: let go of the old link.
+        await driver.disconnect().catch(() => undefined)
+        return false
+      }
       this.lastConnectError = ''
       return true
     } catch (error) {
+      if (driver !== this.driver) return false
       const message = error instanceof Error ? error.message : String(error)
-      // Log once per distinct failure rather than every retry.
       if (message !== this.lastConnectError) log.warn(`Connect failed: ${message}`)
       this.lastConnectError = message
       return false
     } finally {
-      this.connecting = false
+      if (this.connecting === driver) this.connecting = null
     }
   }
-
-  get connectError(): string {
-    return this.lastConnectError
-  }
-
-  private checkJogWatchdog(): void {
-    if (!this.jogState) return
-    if (Date.now() - this.jogState.lastPing <= JOG_WATCHDOG_MS) return
-    const { direction } = this.jogState
-    this.jogState = null
-    log.warn(`Jog ${direction} stopped by watchdog (no keep-alive from the UI)`)
-    void this.driver.jog(direction, false).catch(() => undefined)
-  }
-
-  // -------------------------------------------------------------------------
-  // HardwareInterface — delegation
-  // -------------------------------------------------------------------------
 
   connect(): Promise<void> {
     return this.driver.connect()
   }
 
   disconnect(): Promise<void> {
-    this.jogState = null
     return this.driver.disconnect()
   }
 
@@ -150,7 +124,6 @@ export class HardwareHub extends EventEmitter implements HardwareInterface {
   }
 
   reset(): Promise<void> {
-    this.jogState = null
     return this.driver.reset()
   }
 
@@ -158,128 +131,48 @@ export class HardwareHub extends EventEmitter implements HardwareInterface {
     return this.driver.home()
   }
 
-  setMode(mode: MachineMode): Promise<void> {
-    this.jogState = null
-    return this.driver.setMode(mode)
+  writeSpeeds(speeds: SpeedSettings): Promise<void> {
+    return this.driver.writeSpeeds(speeds)
   }
 
-  /**
-   * `active: true` must be repeated while the button is held (keep-alive); only
-   * the first call is sent to the machine.
-   */
-  async jog(direction: JogDirection, active: boolean): Promise<void> {
-    if (!active) {
-      const current = this.jogState
-      this.jogState = null
-      await this.driver.jog(current?.direction ?? direction, false)
-      return
-    }
-    if (this.jogState && this.jogState.direction === direction) {
-      this.jogState.lastPing = Date.now()
-      return
-    }
-    if (this.jogState) await this.driver.jog(this.jogState.direction, false)
-    await this.driver.jog(direction, true)
-    this.jogState = { direction, lastPing: Date.now() }
-  }
-
-  setSpeeds(speeds: SpeedSettings): Promise<void> {
-    return this.driver.setSpeeds(speeds)
-  }
-
-  setLoadCapacity(loadCapacityN: number): Promise<void> {
-    return this.driver.setLoadCapacity(loadCapacityN)
-  }
-
-  setHeightCapacity(heightCapacityMm: number): Promise<void> {
-    return this.driver.setHeightCapacity(heightCapacityMm)
-  }
-
-  /** Kept across driver swaps: the calibration belongs to the load cell, not the driver. */
-  setLoadCalibration(gain: number, offset: number): void {
-    this.calibration = { gain, offset }
-    this.driver.setLoadCalibration(gain, offset)
-  }
-
-  /** Simulator only: a reference weight on the idle load cell. */
-  setSimulatedReferenceLoad(loadN: number | null): boolean {
-    if (!(this.driver instanceof MockHardware)) return false
-    this.driver.setSimulatedReferenceLoad(loadN)
-    return true
-  }
-
-  getSnapshot(): HardwareSnapshot {
-    return this.driver.getSnapshot()
+  getState(): PlcState {
+    return this.driver.getState()
   }
 
   async forceFault(kind: FaultKind): Promise<void> {
-    if (!this.driver.forceFault) {
-      throw new Error('Fault simulation is only available on the simulator')
-    }
-    this.jogState = null
+    if (!this.driver.forceFault) throw new Error('Fault simulation is only available on the simulator')
     await this.driver.forceFault(kind)
-  }
-
-  get supportsFaultSimulation(): boolean {
-    return typeof this.driver.forceFault === 'function'
   }
 }
 
 let hub: HardwareHub | null = null
 
 export function loadHardwareConfig(): HardwareConfig {
-  const s = settingsRepo.getAll()
-  let driver: HardwareDriver = 'simulator'
-  let connection = DEFAULT_CONNECTION
-  let registerMap = DEFAULT_REGISTER_MAP
+  const stored = settingsRepo.get('hardware_config')
+  if (!stored) return DEFAULT_HARDWARE_CONFIG
   try {
-    driver = validateDriver(s.hardware_driver ?? 'simulator')
+    return validateHardwareConfig(JSON.parse(stored))
   } catch (error) {
-    log.error('Invalid stored hardware driver, using simulator', error)
+    log.error('Invalid stored hardware config, using defaults', error)
+    return DEFAULT_HARDWARE_CONFIG
   }
-  try {
-    if (s.modbus_connection) connection = validateConnection(JSON.parse(s.modbus_connection))
-  } catch (error) {
-    log.error('Invalid stored Modbus connection, using defaults', error)
-  }
-  try {
-    if (s.modbus_register_map) registerMap = validateRegisterMap(JSON.parse(s.modbus_register_map))
-  } catch (error) {
-    log.error('Invalid stored register map, using defaults', error)
-  }
-  return { driver, connection, registerMap }
 }
 
-export function buildDriver(
-  config: HardwareConfig,
-  options: { probeOnly?: boolean } = {}
-): HardwareInterface {
-  const s = settingsRepo.getAll()
-  const loadCapacityN = Number(s.load_capacity_n ?? 250)
-  const heightCapacityMm = Number(s.height_capacity_mm ?? 4000)
-  const speeds = settingsRepo.getSpeeds()
-  if (config.driver === 'modbus') {
-    return new ModbusHardware(
-      config.connection,
-      config.registerMap,
-      speeds,
-      loadCapacityN,
-      heightCapacityMm,
-      options.probeOnly
-    )
+export function buildDriver(config: HardwareConfig, options: { probeOnly?: boolean } = {}): HardwareInterface {
+  switch (config.driver) {
+    case 's7':
+      return new S7Hardware(config.s7.connection, config.s7.map, options.probeOnly)
+    case 'modbus':
+      return new ModbusHardware(config.modbus.connection, config.modbus.map, options.probeOnly)
+    default:
+      return new MockHardware(settingsRepo.getSpeeds())
   }
-  return new MockHardware({ loadCapacityN, heightCapacityMm, speeds })
 }
 
-/**
- * Single place where the driver is chosen — from the admin's Settings choice.
- * The simulator is the default until a real register map is configured.
- */
+/** The driver comes from the admin's choice; Siemens S7 out of the box. */
 export function initHardware(): HardwareHub {
   const config = loadHardwareConfig()
   hub = new HardwareHub(buildDriver(config), config.driver)
-  const calibration = calibrationsRepo.active()
-  if (calibration) hub.setLoadCalibration(calibration.gain, calibration.offset)
   return hub
 }
 

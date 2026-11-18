@@ -37,7 +37,7 @@ exports.default = async function afterPack(context) {
   versionInfo.setStringValues(lang, {
     FileDescription: appInfo.description || appInfo.productName,
     ProductName: appInfo.productName,
-    CompanyName: appInfo.companyName || 'Novatek',
+    CompanyName: appInfo.companyName || 'PantoCheck',
     LegalCopyright: appInfo.copyright,
     InternalName: appInfo.productName,
     OriginalFilename: `${appInfo.productFilename}.exe`

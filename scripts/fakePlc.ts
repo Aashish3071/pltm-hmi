@@ -1,188 +1,71 @@
 /**
- * A minimal fake PLTM PLC for integration tests. It speaks Modbus RTU framing
- * (with CRC-16) over a TCP socket — what a serial-to-Ethernet gateway carries —
- * or Modbus TCP (MBAP), and simulates the pantograph using the addresses of
- * DEFAULT_REGISTER_MAP. It also implements the PLC-side safety functions of
- * docs/plc-safety-requirements.md: latched E-stop, its own overload trip,
- * a travel limit, and a communication watchdog.
+ * A fake pantograph-tester PLC for Modbus integration tests. It speaks Modbus
+ * RTU framing (with CRC-16) over a TCP socket or a serial stream, or Modbus
+ * TCP (MBAP), and publishes the PLC emulator's six values in the registers of
+ * DEFAULT_MODBUS_MAP.
  */
 import net from 'net'
-
-export const STATUS = {
-  HOMING_NOT_DONE: 0,
-  READY: 1,
-  RAISING: 2,
-  RAISING_COMPLETED: 3,
-  RETRIEVING: 4,
-  HALT: 5,
-  EMERGENCY: 10,
-  OVERLOAD: 12
-}
-
-/** Watchdog timeout from the safety requirements. */
-export const WATCHDOG_MS = 2000
+import { PlcEmulator } from '../src/main/hardware/PlcEmulator'
 
 export class FakePlc {
-  coils = new Array<number>(16).fill(0)
+  readonly plc = new PlcEmulator()
+  coils = new Array<number>(32).fill(0)
   discrete = new Array<number>(16).fill(0)
-  holding = new Array<number>(16).fill(0)
+  holding = new Array<number>(40).fill(0)
   input = new Array<number>(16).fill(0)
-
-  status = STATUS.HOMING_NOT_DONE
-  positionMm = 0
-  loadN = 0
-  /** Forces the load reading (for overload tests). */
-  loadOverrideN: number | null = null
-  manualMode = false
-  /** The physical E-stop button: true while pressed (latched in). */
-  estopPressed = false
-  /** When the safety functions last stopped motion, and why. */
-  lastSafetyStop: 'estop' | 'overload' | 'travel' | 'watchdog' | null = null
   writes = 0
   requests = 0
-  private lastHeartbeat = 0
-  private lastHeartbeatChange = Date.now()
-  private haltedPhase: 'up' | 'down' = 'up'
   private timer: NodeJS.Timeout
   private servers: net.Server[] = []
   private sockets = new Set<net.Socket>()
 
   constructor(private readonly unitId = 1) {
-    this.timer = setInterval(() => this.tick(0.05), 50)
-    this.syncInputs()
+    this.timer = setInterval(() => this.tick(25), 25)
+    this.sync()
   }
 
-  get upSpeed(): number {
-    return this.holding[0] * 0.1
-  }
-  get downSpeed(): number {
-    return this.holding[1] * 0.1
-  }
-  get jogSpeed(): number {
-    return this.holding[2] * 0.1
-  }
-  get travelMm(): number {
-    return this.holding[3]
-  }
-  get overloadLimitN(): number {
-    return this.holding[4] * 0.1
-  }
-  get travelLimitMm(): number {
-    return this.holding[5]
-  }
-  get heartbeat(): number {
-    return this.holding[6]
-  }
-  private get moving(): boolean {
-    return (
-      this.status === STATUS.RAISING ||
-      this.status === STATUS.RETRIEVING ||
-      (this.manualMode && (this.coils[4] === 1 || this.coils[5] === 1))
-    )
-  }
-
-  /** Stops all motion: what the PLC does for any safety function. */
-  private safetyStop(reason: NonNullable<FakePlc['lastSafetyStop']>, status: number): void {
-    this.coils[4] = 0
-    this.coils[5] = 0
-    if (this.status === STATUS.RAISING || this.status === STATUS.RETRIEVING) {
-      this.haltedPhase = this.status === STATUS.RAISING ? 'up' : 'down'
-    }
-    this.status = status
-    this.lastSafetyStop = reason
+  private float(address: number): number {
+    const b = Buffer.alloc(4)
+    b.writeUInt16BE(this.holding[address], 0)
+    b.writeUInt16BE(this.holding[address + 1], 2)
+    return b.readFloatBE(0)
   }
 
   private onCoilWrite(address: number, value: number): void {
-    const rising = value && !this.coils[address]
-    this.coils[address] = value ? 1 : 0
-    if (!rising) return
-    switch (address) {
-      case 0: // start
-        if (this.estopPressed || this.discrete[2] || this.discrete[3]) break
-        if (this.status === STATUS.READY) this.status = STATUS.RAISING
-        else if (this.status === STATUS.HALT) {
-          this.status = this.haltedPhase === 'up' ? STATUS.RAISING : STATUS.RETRIEVING
-        }
-        break
-      case 1: // stop
-        if (this.status === STATUS.RAISING || this.status === STATUS.RETRIEVING) {
-          this.haltedPhase = this.status === STATUS.RAISING ? 'up' : 'down'
-          this.status = STATUS.HALT
-        }
-        break
-      case 2: // reset
-        // A pressed E-stop cannot be reset away; it must be released first.
-        if (this.estopPressed) break
-        this.loadOverrideN = null
-        this.discrete[2] = 0
-        this.discrete[3] = 0
-        this.status = this.discrete[0] ? STATUS.READY : STATUS.HOMING_NOT_DONE
-        break
-      case 3: // home
-        this.positionMm = 0
-        this.discrete[0] = 1
-        this.status = STATUS.READY
-        break
+    this.coils[address] = value
+    if (address === 3 && value) {
+      if (!this.coils[10]) this.plc.start()
+      this.coils[3] = 0
     }
+    if (address === 10 && value) this.plc.stop()
+    if (address === 6 && value) {
+      this.plc.reset()
+      this.coils[6] = 0
+    }
+    if (address === 8 && value) this.plc.home()
   }
 
-  private tick(dt: number): void {
-    this.discrete[1] = this.estopPressed ? 1 : 0
-    if (this.heartbeat !== this.lastHeartbeat) {
-      this.lastHeartbeat = this.heartbeat
-      this.lastHeartbeatChange = Date.now()
-    }
-    if (this.estopPressed && this.status !== STATUS.EMERGENCY) {
-      this.safetyStop('estop', STATUS.EMERGENCY)
-    } else if (this.moving && Date.now() - this.lastHeartbeatChange > WATCHDOG_MS) {
-      // The app has gone silent: stop as a STOP would.
-      this.safetyStop('watchdog', this.manualMode ? this.status : STATUS.HALT)
-    }
-
-    if (this.status === STATUS.EMERGENCY || this.discrete[2] || this.discrete[3]) {
-      // Latched: nothing moves until RESET.
-    } else if (this.manualMode) {
-      if (this.coils[4]) this.positionMm += this.jogSpeed * dt
-      if (this.coils[5]) this.positionMm = Math.max(0, this.positionMm - this.jogSpeed * dt)
-    } else if (this.status === STATUS.RAISING) {
-      this.positionMm += this.upSpeed * dt
-      if (this.positionMm >= this.travelMm) {
-        this.positionMm = this.travelMm
-        this.status = STATUS.RETRIEVING
-      }
-    } else if (this.status === STATUS.RETRIEVING) {
-      this.positionMm -= this.downSpeed * dt
-      if (this.positionMm <= 0) {
-        this.positionMm = 0
-        this.status = STATUS.READY
-      }
-    }
-    const moving = this.status === STATUS.RAISING || this.status === STATUS.RETRIEVING
-    this.loadN = this.loadOverrideN ?? (moving ? 60 + Math.random() : 0)
-
-    if (this.moving && this.overloadLimitN > 0 && this.loadN > this.overloadLimitN) {
-      this.discrete[2] = 1
-      this.safetyStop('overload', STATUS.OVERLOAD)
-    }
-    if (this.moving && this.travelLimitMm > 0 && this.positionMm >= this.travelLimitMm) {
-      this.positionMm = this.travelLimitMm
-      this.discrete[3] = 1
-      this.safetyStop('travel', STATUS.HALT)
-    }
-    this.syncInputs()
+  private tick(dtMs: number): void {
+    this.plc.speeds = { up: this.float(20) || 50, down: this.float(22) || 50, jog: this.float(24) || 50 }
+    const distance = this.float(26)
+    if (distance > 0) this.plc.distanceMm = distance
+    this.plc.tick(dtMs)
+    this.sync()
   }
 
-  private syncInputs(): void {
-    const writeInt32 = (address: number, value: number): void => {
-      const buffer = Buffer.alloc(4)
-      buffer.writeInt32BE(Math.round(value), 0)
-      this.input[address] = buffer.readUInt16BE(0)
-      this.input[address + 1] = buffer.readUInt16BE(2)
+  private sync(): void {
+    const int32 = (address: number, value: number): void => {
+      const b = Buffer.alloc(4)
+      b.writeInt32BE(Math.round(value), 0)
+      this.holding[address] = b.readUInt16BE(0)
+      this.holding[address + 1] = b.readUInt16BE(2)
     }
-    writeInt32(0, this.loadN / 0.01)
-    writeInt32(2, this.positionMm / 0.01)
-    this.input[4] = this.status
-    this.input[5] = this.manualMode ? 1 : 0
+    int32(0, this.plc.loadN * 100)
+    int32(2, this.plc.positionMm)
+    this.holding[4] = this.plc.code
+    this.holding[5] = this.plc.upTimeSec
+    this.holding[6] = this.plc.downTimeSec
+    this.holding[7] = this.plc.mode === 'MANUAL' ? 1 : 2
   }
 
   /** Executes one request PDU and returns the response PDU. */

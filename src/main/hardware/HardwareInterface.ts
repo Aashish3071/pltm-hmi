@@ -1,63 +1,83 @@
 import type EventEmitter from 'events'
-import type {
-  CycleCompleteEvent,
-  ConnectionEvent,
-  HardwareSnapshot,
-  HardwareStatus,
-  JogDirection,
-  MachineMode,
-  ModelConfig,
-  SpeedSettings,
-  TelemetryFrame
-} from '@shared/types'
+import type { ModelConfig, PlcState, SpeedSettings } from '@shared/types'
+import type { FaultKind } from './PlcEmulator'
 
-export type FaultKind =
-  | 'EMERGENCY'
-  | 'SERVO_ERROR'
-  | 'SERVO_OFF'
-  | 'OVERLOAD'
-  | 'OVER_TRAVEL'
-  | 'DISCONNECT'
+export type { FaultKind }
 
 export interface HardwareEvents {
-  telemetry: (frame: TelemetryFrame) => void
-  status: (status: HardwareStatus) => void
-  connection: (event: ConnectionEvent) => void
-  'cycle-complete': (event: CycleCompleteEvent) => void
+  /** Every poll of the PLC. */
+  state: (state: PlcState) => void
+  connection: (connected: boolean) => void
 }
 
 /**
- * Contract every hardware driver implements: `ModbusHardware` for the real
- * machine, `MockHardware` for the simulator. Nothing above this layer knows
- * which one is active.
+ * What the app needs from the machine: poll the PLC's six values, and set
+ * the command bits. The PLC runs the test cycle and
+ * its interlocks itself; drivers only translate.
  */
 export interface HardwareInterface extends EventEmitter {
   connect(): Promise<void>
   disconnect(): Promise<void>
 
+  /** Writes the model's travel distance, clears STOP (resume) and sets START. */
   start(model: ModelConfig): Promise<void>
   stop(): Promise<void>
   reset(): Promise<void>
   home(): Promise<void>
 
-  setMode(mode: MachineMode): Promise<void>
-  jog(direction: JogDirection, active: boolean): Promise<void>
-  setSpeeds(speeds: SpeedSettings): Promise<void>
+  /** Up, down and jog speeds (mm/s) to the PLC. */
+  writeSpeeds(speeds: SpeedSettings): Promise<void>
 
-  getSnapshot(): HardwareSnapshot
+  getState(): PlcState
 
-  /** Load above this trips OVERLOAD. The real machine also receives it as the PLC's trip limit. */
-  setLoadCapacity(loadCapacityN: number): Promise<void>
-
-  /** Highest allowed position; the real machine receives it as the PLC's soft travel limit. */
-  setHeightCapacity(heightCapacityMm: number): Promise<void>
-
-  /** Load-cell correction applied to every reading: load = gain × raw + offset. */
-  setLoadCalibration(gain: number, offset: number): void
-
-  /** Dev/demo only — simulates faults that would otherwise come from the machine. */
+  /** Simulator only — faults that would otherwise come from the machine. */
   forceFault?(kind: FaultKind): Promise<void>
 
   on<E extends keyof HardwareEvents>(event: E, listener: HardwareEvents[E]): this
   emit<E extends keyof HardwareEvents>(event: E, ...args: Parameters<HardwareEvents[E]>): boolean
+}
+
+export function disconnectedState(previous?: PlcState): PlcState {
+  return {
+    connected: false,
+    timestampMs: Date.now(),
+    loadN: previous?.loadN ?? 0,
+    positionMm: previous?.positionMm ?? 0,
+    code: 100,
+    upTimeSec: previous?.upTimeSec ?? 0,
+    downTimeSec: previous?.downTimeSec ?? 0,
+    mode: previous?.mode ?? null
+  }
+}
+
+/**
+ * Parses the status string: "load×100 position status uptime downtime mode".
+ * Returns null when it does not hold six numbers (such polls are skipped).
+ */
+export function parseStatusString(text: string, loadDivisor: number): Omit<PlcState, 'connected' | 'timestampMs'> | null {
+  const parts = text.trim().split(/\s+/)
+  if (parts.length < 6) return null
+  const n = parts.slice(0, 6).map((p) => Number(p))
+  if (n.some((v) => !Number.isFinite(v))) return null
+  const [load, position, code, up, down, mode] = n
+  return {
+    loadN: Math.trunc(load) / (loadDivisor || 1),
+    positionMm: Math.trunc(position),
+    code: Math.trunc(code),
+    upTimeSec: up,
+    downTimeSec: down,
+    mode: mode === 1 ? 'MANUAL' : mode === 2 ? 'AUTO' : null
+  }
+}
+
+export function messageOf(error: unknown): string {
+  if (error instanceof Error) return error.message
+  if (error && typeof error === 'object' && 'message' in error) {
+    return String((error as { message: unknown }).message)
+  }
+  return String(error)
+}
+
+export function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }

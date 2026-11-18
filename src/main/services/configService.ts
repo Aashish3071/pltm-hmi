@@ -1,121 +1,86 @@
 import {
   ErrorCode,
-  MAX_SPEED_MM_S,
+  type ConnectionTestResult,
   type HardwareConfig,
   type MachineSettings,
   type ModelConfig,
+  type ModelDraft,
   type ModelPoint,
   type SpeedSettings,
   type UserAccount
 } from '@shared/types'
+import { statusText } from '@shared/types'
 import { modelsRepo, settingsRepo, usersRepo } from '../db/repositories'
 import { CommandError } from '../errors'
 import { log } from '../logger'
-import {
-  ConfigError,
-  missingSafetySignals,
-  validateConnection,
-  validateDriver,
-  validateRegisterMap
-} from '../hardware/config'
+import { ConfigError, validateHardwareConfig } from '../hardware/config'
 import { buildDriver, getHardware, loadHardwareConfig } from '../hardware/HardwareManager'
-import { getActiveRunId } from './testRunService'
 import * as auth from './authService'
+import { currentModel } from './testService'
 
 export const MODEL_ROWS = 9
 const NAME_MAX = 40
 const USER_NAME_MAX = 20
-const PASSWORD_MIN = 4
+const PASSWORD_MIN = 3
+const MAX_SPEED_MM_S = 500
 
 function invalid(message: string): CommandError {
   return new CommandError(ErrorCode.INVALID_INPUT, message)
 }
 
-function capacities(): { loadN: number; heightMm: number } {
-  const s = settingsRepo.getAll()
-  return {
-    loadN: Number(s.load_capacity_n ?? 250),
-    heightMm: Number(s.height_capacity_mm ?? 4000)
-  }
-}
-
 // ---------------------------------------------------------------------------
-// Models
+// Models (Settings: MODEL, LOAD / HEIGHT, OK)
 // ---------------------------------------------------------------------------
 
-export function saveModel(input: Omit<ModelConfig, 'id'> & { id?: number }): ModelConfig[] {
-  const name = String(input.name ?? '').trim()
-  if (!name) throw invalid('Model name is required.')
+/**
+ * Saves the edited model and makes it the current one. A new name adds a
+ * new model; the original stays.
+ */
+export function saveModel(draft: ModelDraft): { models: ModelConfig[]; current: ModelConfig } {
+  const name = String(draft.name ?? '').trim()
+  if (!name) throw new CommandError(ErrorCode.INVALID_INPUT, 'Model Cannot Be Empty')
   if (name.length > NAME_MAX) throw invalid(`Model name must be at most ${NAME_MAX} characters.`)
-
-  if (!Array.isArray(input.points) || input.points.length !== MODEL_ROWS) {
-    throw invalid(`A model needs exactly ${MODEL_ROWS} load/height rows.`)
+  if (!Array.isArray(draft.points) || draft.points.length !== MODEL_ROWS) {
+    throw invalid(`A model needs ${MODEL_ROWS} LOAD and HEIGHT values.`)
   }
-  const cap = capacities()
-  const points: ModelPoint[] = input.points.map((p, i) => {
+  const heightCap = Number(settingsRepo.get('height_capacity_mm') ?? 4000)
+  const points: ModelPoint[] = draft.points.map((p, i) => {
     const loadN = Number(p.loadN)
     const heightMm = Number(p.heightMm)
-    const row = i + 1
-    if (!Number.isFinite(loadN) || loadN < 0 || loadN > cap.loadN) {
-      throw invalid(`Row ${row}: load must be between 0 and ${cap.loadN} N.`)
+    if (!Number.isFinite(loadN) || loadN < 0 || loadN > 1000) throw invalid(`X${i + 1}: enter a load in N.`)
+    if (!Number.isFinite(heightMm) || heightMm < 0 || heightMm > heightCap) {
+      throw invalid(`Y${i + 1}: enter a height between 0 and ${heightCap} mm.`)
     }
-    if (!Number.isFinite(heightMm) || heightMm < 0 || heightMm > cap.heightMm) {
-      throw invalid(`Row ${row}: height must be between 0 and ${cap.heightMm} mm.`)
-    }
-    return { rowIndex: row, loadN, heightMm }
+    return { rowIndex: i + 1, loadN, heightMm }
   })
-
-  // Per the machine manual, row 4's height is the distance the pantograph travels.
   const distanceMm = points[3].heightMm
-  if (distanceMm <= 0) throw invalid('Row 4 height (travel distance) must be greater than 0.')
+  if (distanceMm <= 0) throw invalid('Y4 (the travel distance) must be greater than 0.')
 
-  const existingId = modelsRepo.idByName(name)
-  if (existingId !== undefined && existingId !== input.id) {
-    throw new CommandError(ErrorCode.DUPLICATE_NAME, `A model named "${name}" already exists.`)
-  }
-  if (input.id !== undefined && !modelsRepo.get(input.id)) {
-    throw invalid('That model no longer exists.')
-  }
-  if (input.id !== undefined && isActiveRunModel(input.id)) {
-    throw invalid('This model is being used by the current test. Finish or RESET it first.')
-  }
-
-  modelsRepo.save({ id: input.id, name, distanceMm, points })
-  return modelsRepo.list()
-}
-
-export function deleteModel(id: number): ModelConfig[] {
-  if (!modelsRepo.get(id)) throw invalid('That model no longer exists.')
-  if (modelsRepo.list().length <= 1) throw invalid('At least one model must remain.')
-  if (isActiveRunModel(id)) {
-    throw invalid('This model is being used by the current test. Finish or RESET it first.')
-  }
-  modelsRepo.archive(id)
-  return modelsRepo.list()
-}
-
-function isActiveRunModel(id: number): boolean {
-  return getActiveRunId() !== null && getHardware().getSnapshot().activeModelId === id
+  const editing = draft.id ? modelsRepo.get(draft.id) : undefined
+  const sameName = modelsRepo.idByName(name)
+  let id: number | undefined
+  if (editing && editing.name.toLowerCase() === name.toLowerCase()) id = editing.id
+  else if (sameName !== undefined) id = sameName
+  id = modelsRepo.save({ id, name, distanceMm, points })
+  settingsRepo.set('current_model_id', String(id))
+  log.info(`Model "${name}" saved`)
+  return { models: modelsRepo.list(), current: modelsRepo.get(id)! }
 }
 
 // ---------------------------------------------------------------------------
-// Users
+// Users (Settings: USERNAME / PASSWORD / CHANGE, employee names / SAVE)
 // ---------------------------------------------------------------------------
 
-export function renameUser(id: number, displayName: string): UserAccount[] {
-  const name = String(displayName ?? '').trim()
-  if (!name) throw invalid('User name cannot be empty.')
-  if (name.length > USER_NAME_MAX) throw invalid(`User name must be at most ${USER_NAME_MAX} characters.`)
+export function saveUserNames(names: string[]): UserAccount[] {
   const users = usersRepo.list()
-  if (!users.some((u) => u.id === id)) throw invalid('Unknown user.')
-  // Login matches either the display name or the fixed slot name, so both must be unique.
-  const clash = users.find(
-    (u) =>
-      u.id !== id &&
-      (u.displayName.toLowerCase() === name.toLowerCase() || u.slot.toLowerCase() === name.toLowerCase())
-  )
-  if (clash) throw new CommandError(ErrorCode.DUPLICATE_NAME, `"${name}" is already used by another user.`)
-  usersRepo.rename(id, name)
+  if (!Array.isArray(names) || names.length !== users.length) throw invalid('Enter all four names.')
+  const cleaned = names.map((n) => String(n ?? '').trim())
+  cleaned.forEach((n, i) => {
+    if (!n) throw invalid(`Name ${i + 1} cannot be empty.`)
+    if (n.length > USER_NAME_MAX) throw invalid(`Names must be at most ${USER_NAME_MAX} characters.`)
+  })
+  if (new Set(cleaned).size !== cleaned.length) throw new CommandError(ErrorCode.DUPLICATE_NAME, 'Each name must be different.')
+  users.forEach((u, i) => usersRepo.rename(u.id, cleaned[i]))
   return usersRepo.list()
 }
 
@@ -128,68 +93,83 @@ export function changePassword(id: number, password: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// Machine settings
+// Speeds and distance (Settings: JOG / UP / DOWN SPEED, DISTANCE, UPLOAD)
 // ---------------------------------------------------------------------------
 
-export async function setSpeeds(input: SpeedSettings): Promise<SpeedSettings> {
+export function getSettings(): { speeds: SpeedSettings; distanceMm: number } {
+  const model = currentModel()
+  return { speeds: settingsRepo.getSpeeds(), distanceMm: model?.distanceMm ?? 0 }
+}
+
+/**
+ * Stores the speeds and distance; the speeds go to the PLC at once and the
+ * distance with every START.
+ */
+export async function upload(input: { speeds: SpeedSettings; distanceMm: number }): Promise<void> {
   const speeds: SpeedSettings = {
-    up: Number(input.up),
-    down: Number(input.down),
-    jog: Number(input.jog)
+    up: Number(input?.speeds?.up),
+    down: Number(input?.speeds?.down),
+    jog: Number(input?.speeds?.jog)
   }
   for (const [label, value] of Object.entries(speeds)) {
     if (!Number.isFinite(value) || value <= 0 || value > MAX_SPEED_MM_S) {
       throw invalid(`${label.toUpperCase()} SPEED must be between 0 and ${MAX_SPEED_MM_S} mm/s.`)
     }
   }
+  const distanceMm = Number(input?.distanceMm)
+  const heightCap = Number(settingsRepo.get('height_capacity_mm') ?? 4000)
+  if (!Number.isFinite(distanceMm) || distanceMm <= 0 || distanceMm > heightCap) {
+    throw invalid(`DISTANCE must be between 0 and ${heightCap} mm.`)
+  }
   settingsRepo.setSpeeds(speeds)
-  await getHardware().setSpeeds(speeds)
-  return speeds
+  const model = currentModel()
+  if (model && model.distanceMm !== distanceMm) modelsRepo.save({ ...model, distanceMm })
+  const hardware = getHardware()
+  if (hardware.getState().connected) await hardware.writeSpeeds(speeds)
 }
+
+// ---------------------------------------------------------------------------
+// Machine and company
+// ---------------------------------------------------------------------------
 
 export function getMachineSettings(): MachineSettings {
   const s = settingsRepo.getAll()
   return {
     machineId: s.machine_id ?? '',
-    loadCapacityN: Number(s.load_capacity_n ?? 250),
+    loadCapacityKg: Number(s.load_capacity_kg ?? 50),
     heightCapacityMm: Number(s.height_capacity_mm ?? 4000),
-    companyName: s.company_name ?? '',
-    companyAddress: s.company_address ?? ''
+    company: {
+      name: s.company_name ?? '',
+      addressLine1: s.company_address_1 ?? '',
+      addressLine2: s.company_address_2 ?? ''
+    },
+    measurementSpeedText: s.measurement_speed_text ?? ''
   }
 }
 
-export async function setMachineSettings(input: MachineSettings): Promise<MachineSettings> {
-  const machineId = String(input.machineId ?? '').trim()
-  const companyName = String(input.companyName ?? '').trim()
-  const companyAddress = String(input.companyAddress ?? '').trim()
-  if (!companyName || companyName.length > 80) {
-    throw invalid('Company name is required (max 80 characters); it is printed on certificates.')
-  }
-  if (companyAddress.length > 200) throw invalid('Company address must be at most 200 characters.')
-  const loadCapacityN = Number(input.loadCapacityN)
-  const heightCapacityMm = Number(input.heightCapacityMm)
-  if (!machineId || machineId.length > NAME_MAX) {
-    throw invalid(`Machine ID is required (max ${NAME_MAX} characters).`)
-  }
-  if (!Number.isFinite(loadCapacityN) || loadCapacityN <= 0 || loadCapacityN > 100000) {
-    throw invalid('Load capacity must be a positive number of newtons.')
-  }
-  if (!Number.isFinite(heightCapacityMm) || heightCapacityMm <= 0 || heightCapacityMm > 20000) {
-    throw invalid('Height capacity must be a positive number of millimetres.')
-  }
-  const tooTall = modelsRepo.list().find((m) => m.points.some((p) => p.heightMm > heightCapacityMm))
-  if (tooTall) {
-    throw invalid(`Model "${tooTall.name}" uses heights above ${heightCapacityMm} mm. Edit it first.`)
+export function setMachineSettings(input: MachineSettings): MachineSettings {
+  const machineId = String(input?.machineId ?? '').trim()
+  const name = String(input?.company?.name ?? '').trim()
+  const a1 = String(input?.company?.addressLine1 ?? '').trim()
+  const a2 = String(input?.company?.addressLine2 ?? '').trim()
+  const speedText = String(input?.measurementSpeedText ?? '').trim()
+  if (!machineId || machineId.length > NAME_MAX) throw invalid(`MACHINE ID is required (max ${NAME_MAX} characters).`)
+  if (name.length > 80) throw invalid('Company name must be at most 80 characters.')
+  if (a1.length > 80 || a2.length > 80) throw invalid('Address lines must be at most 80 characters.')
+  if (speedText.length > 20) throw invalid('Speed text must be at most 20 characters.')
+  const loadKg = Number(input?.loadCapacityKg)
+  const heightMm = Number(input?.heightCapacityMm)
+  if (!Number.isFinite(loadKg) || loadKg <= 0 || loadKg > 10000) throw invalid('Load capacity must be a positive number of kg.')
+  if (!Number.isFinite(heightMm) || heightMm <= 0 || heightMm > 20000) {
+    throw invalid('Height capacity must be a positive number of mm.')
   }
   settingsRepo.set('machine_id', machineId)
-  settingsRepo.set('load_capacity_n', String(loadCapacityN))
-  settingsRepo.set('height_capacity_mm', String(heightCapacityMm))
-  settingsRepo.set('company_name', companyName)
-  settingsRepo.set('company_address', companyAddress)
-  const hardware = getHardware()
-  // On the real machine these become the PLC's own overload and travel limits.
-  await hardware.setLoadCapacity(loadCapacityN)
-  await hardware.setHeightCapacity(heightCapacityMm)
+  settingsRepo.set('load_capacity_kg', String(loadKg))
+  settingsRepo.set('height_capacity_mm', String(heightMm))
+  settingsRepo.set('company_name', name)
+  settingsRepo.set('company_address_1', a1)
+  settingsRepo.set('company_address_2', a2)
+  settingsRepo.set('measurement_speed_text', speedText)
   return getMachineSettings()
 }
 
@@ -199,21 +179,10 @@ export async function setMachineSettings(input: MachineSettings): Promise<Machin
 
 function parseHardwareConfig(input: unknown): HardwareConfig {
   try {
-    const raw = input as Partial<HardwareConfig>
-    return {
-      driver: validateDriver(raw?.driver),
-      connection: validateConnection(raw?.connection),
-      registerMap: validateRegisterMap(raw?.registerMap)
-    }
+    return validateHardwareConfig(input)
   } catch (error) {
     if (error instanceof ConfigError) throw invalid(error.message)
     throw error
-  }
-}
-
-function assertIdle(): void {
-  if (getActiveRunId() !== null) {
-    throw invalid('Finish or RESET the current test before changing the machine connection.')
   }
 }
 
@@ -224,37 +193,39 @@ export function getHardwareConfig(): HardwareConfig {
 /** Persists the config and switches the live driver to it. */
 export async function setHardwareConfig(input: unknown): Promise<HardwareConfig> {
   const config = parseHardwareConfig(input)
-  assertIdle()
-  settingsRepo.set('hardware_driver', config.driver)
-  settingsRepo.set('modbus_connection', JSON.stringify(config.connection))
-  settingsRepo.set('modbus_register_map', JSON.stringify(config.registerMap, null, 2))
+  settingsRepo.set('hardware_config', JSON.stringify(config))
   log.info(`Hardware driver set to ${config.driver}`)
-  const missing = config.driver === 'modbus' ? missingSafetySignals(config.registerMap) : []
-  if (missing.length) log.warn(`Register map does not connect: ${missing.join('; ')}`)
   await getHardware().setDriver(buildDriver(config), config.driver)
   return config
 }
 
 /**
  * Tries the given (possibly unsaved) config and reports a live reading. The
- * active driver is released first, since a COM port cannot be opened twice;
- * the supervisor reconnects it afterwards.
+ * active driver is released first when it uses the same link (a COM port
+ * cannot be opened twice); the supervisor reconnects it afterwards.
  */
-export async function testHardwareConfig(
-  input: unknown
-): Promise<{ status: string; loadN: number; heightMm: number }> {
-  const config = parseHardwareConfig({ ...(input as object), driver: 'modbus' })
-  assertIdle()
+export async function testHardwareConfig(input: unknown): Promise<ConnectionTestResult> {
+  const config = parseHardwareConfig(input)
+  if (config.driver === 'simulator') throw invalid('Choose Siemens S7 or Modbus to test a connection.')
   const hub = getHardware()
-  const releasedLive = hub.driverKind === 'modbus'
+  const releasedLive = hub.driverKind === config.driver
   if (releasedLive) await hub.disconnect()
   const probe = buildDriver(config, { probeOnly: true })
   try {
     await probe.connect()
-    const snapshot = probe.getSnapshot()
-    return { status: snapshot.status, loadN: snapshot.loadN, heightMm: snapshot.heightMm }
+    const state = probe.getState()
+    return { status: statusText(state) || `code ${state.code}`, loadN: state.loadN, positionMm: state.positionMm }
   } finally {
     await probe.disconnect().catch(() => undefined)
     if (releasedLive) void hub.tryConnect()
   }
+}
+
+export function describeDevice(config: HardwareConfig): string {
+  if (config.driver === 's7') return `${config.s7.connection.host}:${config.s7.connection.port}`
+  if (config.driver === 'modbus') {
+    const c = config.modbus.connection
+    return c.transport === 'rtu-serial' ? c.serialPath : `${c.host}:${c.port}`
+  }
+  return 'SIMULATOR'
 }
