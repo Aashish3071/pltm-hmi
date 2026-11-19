@@ -84,9 +84,23 @@ export const DEFAULT_MODBUS_MAP: ModbusMap = {
   }
 }
 
+// ---------------------------------------------------------------------------
+// PantoCheck controller (Arduino firmware): Modbus RTU, 9600 8N1, slave 1
+// ---------------------------------------------------------------------------
+
+export const DEFAULT_CONTROLLER_CONNECTION: ModbusConnection = {
+  ...DEFAULT_MODBUS_CONNECTION,
+  transport: 'rtu-serial',
+  serialPath: 'COM3',
+  baudRate: 9600,
+  timeoutMs: 500,
+  pollIntervalMs: 50
+}
+
 export const DEFAULT_HARDWARE_CONFIG: HardwareConfig = {
   driver: 's7',
   s7: { connection: DEFAULT_S7_CONNECTION, map: DEFAULT_S7_MAP },
+  controller: { connection: DEFAULT_CONTROLLER_CONNECTION },
   modbus: { connection: DEFAULT_MODBUS_CONNECTION, map: DEFAULT_MODBUS_MAP }
 }
 
@@ -112,8 +126,8 @@ function optional<T>(value: unknown, check: () => T): T | null {
 }
 
 export function validateDriver(input: unknown): HardwareDriver {
-  if (input !== 'simulator' && input !== 's7' && input !== 'modbus') {
-    throw new ConfigError('Driver must be simulator, s7 or modbus')
+  if (input !== 'simulator' && input !== 's7' && input !== 'controller' && input !== 'modbus') {
+    throw new ConfigError('Driver must be simulator, s7, controller or modbus')
   }
   return input
 }
@@ -184,9 +198,9 @@ export function validateS7Map(input: unknown): S7Map {
   }
 }
 
-export function validateModbusConnection(input: unknown): ModbusConnection {
+export function validateModbusConnection(input: unknown, defaults = DEFAULT_MODBUS_CONNECTION): ModbusConnection {
   if (!isObject(input)) throw new ConfigError('Connection settings must be an object')
-  const c = { ...DEFAULT_MODBUS_CONNECTION, ...input } as ModbusConnection
+  const c = { ...defaults, ...input } as ModbusConnection
   if (!['rtu-serial', 'rtu-tcp', 'tcp'].includes(c.transport)) {
     throw new ConfigError('Transport must be RTU (serial), RTU over TCP, or Modbus TCP')
   }
@@ -280,11 +294,15 @@ export function validateHardwareConfig(input: unknown): HardwareConfig {
   if (!isObject(input)) throw new ConfigError('Hardware config must be an object')
   const s7 = isObject(input.s7) ? input.s7 : {}
   const modbus = isObject(input.modbus) ? input.modbus : {}
+  const controller = isObject(input.controller) ? input.controller : {}
   return {
     driver: validateDriver(input.driver),
     s7: {
       connection: validateS7Connection(s7.connection ?? {}),
       map: validateS7Map(s7.map ?? DEFAULT_S7_MAP)
+    },
+    controller: {
+      connection: validateModbusConnection(controller.connection ?? {}, DEFAULT_CONTROLLER_CONNECTION)
     },
     modbus: {
       connection: validateModbusConnection(modbus.connection ?? {}),

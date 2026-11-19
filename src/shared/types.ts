@@ -15,6 +15,8 @@ export const StatusCode = {
   PANTO_RAISING_COMPLETED: 71,
   PANTO_RETRIEVING: 81,
   CYCLE_COMPLETED: 91,
+  /** Controller only: an over-travel limit switch or the soft travel limit tripped. */
+  OVER_TRAVEL: 25,
   /** Not sent by the PLC: shown when the app cannot reach it. */
   ETHERNET_DISCONNECTED: 100
 } as const
@@ -33,6 +35,7 @@ export const STATUS_TEXT: Record<number, string> = {
   71: 'PANTO RAISING COMPLETED',
   81: 'PANTO RETRIEVING',
   91: 'CYCLE COMPLETED',
+  25: 'OVER TRAVEL',
   100: 'ETHERNET DISCONNECTED'
 }
 
@@ -46,6 +49,7 @@ export const ALARM_CODES: number[] = [
   StatusCode.OVERLOAD,
   StatusCode.SERVO_OFF,
   StatusCode.HOMING_NOT_DONE,
+  StatusCode.OVER_TRAVEL,
   StatusCode.ETHERNET_DISCONNECTED
 ]
 
@@ -167,13 +171,21 @@ export interface SystemInfo {
   heightCapacityMm: number
   appVersion: string
   driver: HardwareDriver
+  /** Status-bar text and what to check while the machine link is down. */
+  disconnectedTitle: string
+  disconnectedHint: string
 }
 
 // ---------------------------------------------------------------------------
 // Hardware drivers
 // ---------------------------------------------------------------------------
 
-export type HardwareDriver = 'simulator' | 's7' | 'modbus'
+/**
+ * s7:         Siemens S7 PLC over Ethernet.
+ * controller: the PantoCheck controller (Arduino firmware in firmware/), Modbus RTU.
+ * modbus:     any PLC publishing the six values in Modbus registers.
+ */
+export type HardwareDriver = 'simulator' | 's7' | 'controller' | 'modbus'
 
 /** Siemens S7 over Ethernet (ISO-on-TCP, port 102). */
 export interface S7Connection {
@@ -289,7 +301,30 @@ export interface ModbusMap {
 export interface HardwareConfig {
   driver: HardwareDriver
   s7: { connection: S7Connection; map: S7Map }
+  /** The controller's register layout is fixed (firmware/pltm-controller/Registers.h). */
+  controller: { connection: ModbusConnection }
   modbus: { connection: ModbusConnection; map: ModbusMap }
+}
+
+/** Status-bar text while the machine link is down: says which link it is. */
+export function disconnectedTitle(config: Pick<HardwareConfig, 'driver' | 'controller' | 'modbus'>): string {
+  const serial =
+    (config.driver === 'controller' && config.controller.connection.transport === 'rtu-serial') ||
+    (config.driver === 'modbus' && config.modbus.connection.transport === 'rtu-serial')
+  return serial ? 'MACHINE DISCONNECTED' : STATUS_TEXT[StatusCode.ETHERNET_DISCONNECTED]
+}
+
+/** What to check when the machine link is down, by how it is connected. */
+export function disconnectedHint(config: Pick<HardwareConfig, 'driver' | 'controller' | 'modbus'>): string {
+  const transport =
+    config.driver === 'controller'
+      ? config.controller.connection.transport
+      : config.driver === 'modbus'
+        ? config.modbus.connection.transport
+        : 'tcp'
+  if (config.driver === 'simulator') return 'The simulator restarts by itself.'
+  if (transport === 'rtu-serial') return 'Check the machine power and the USB-RS485 cable.'
+  return 'Check the machine power and the Ethernet cable.'
 }
 
 export interface SerialPortInfo {
@@ -305,6 +340,71 @@ export interface ConnectionTestResult {
   status: string
   loadN: number
   positionMm: number
+}
+
+/** A finished test in the history list. */
+export interface TestRunSummary {
+  id: number
+  employeeName: string | null
+  modelName: string | null
+  partNo: string | null
+  startedAt: string
+  endedAt: string | null
+  resultStatus: string | null
+  reportPath: string | null
+  results: TestResults | null
+}
+
+export interface TestRunQuery {
+  /** Matches anywhere in the Part-No, ignoring case. */
+  partNo?: string
+  modelId?: number
+  /** Inclusive local dates, YYYY-MM-DD. */
+  fromDate?: string
+  toDate?: string
+  resultStatus?: string
+  limit?: number
+  offset?: number
+}
+
+export interface TestRunPage {
+  runs: TestRunSummary[]
+  total: number
+}
+
+/** A stored test, for redrawing its graph and reprinting its report. */
+export interface TestRunDetail {
+  run: TestRunSummary
+  model: ModelConfig | null
+  samples: Sample[]
+}
+
+/** Shown on the login screen when the ADMIN password is forgotten. */
+export interface RecoveryRequest {
+  requestCode: string
+  machineId: string
+  expiresAt: string
+}
+
+export type BackupKind = 'auto' | 'manual' | 'pre-restore'
+
+/** One backup folder: a copy of the database. */
+export interface BackupInfo {
+  name: string
+  path: string
+  createdAt: string
+  kind: BackupKind
+  sizeBytes: number
+  testRuns: number | null
+}
+
+export interface BackupStatus {
+  dir: string
+  /** Automatic backups kept; older automatic ones are deleted. */
+  keep: number
+  lastBackupAt: string | null
+  lastError: string | null
+  backups: BackupInfo[]
 }
 
 export interface ReportResult {
@@ -330,6 +430,8 @@ export const ErrorCode = {
   DUPLICATE_NAME: 'ERR_DUPLICATE_NAME',
   NOT_AUTHORIZED: 'ERR_NOT_AUTHORIZED',
   CONNECTION_FAILED: 'ERR_CONNECTION_FAILED',
+  PORT_LIST_FAILED: 'ERR_PORT_LIST_FAILED',
+  BACKUP_FAILED: 'ERR_BACKUP_FAILED',
   INTERNAL: 'ERR_INTERNAL'
 } as const
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode]
@@ -343,6 +445,8 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   [ErrorCode.DUPLICATE_NAME]: 'That name is already in use.',
   [ErrorCode.NOT_AUTHORIZED]: 'Administrator access is required for this action.',
   [ErrorCode.CONNECTION_FAILED]: 'Could not connect to the machine.',
+  [ErrorCode.PORT_LIST_FAILED]: 'Could not search for COM ports. Type the port name, e.g. COM7.',
+  [ErrorCode.BACKUP_FAILED]: 'The backup could not be made. Check the backup folder is reachable and has space.',
   [ErrorCode.INTERNAL]: 'Unexpected error. Details were written to the application log.'
 }
 
@@ -357,6 +461,8 @@ export const IPC = {
   AUTH_LOGOUT: 'auth:logout',
   AUTH_ADMIN_CHECK: 'auth:admin-check',
   AUTH_ADMIN_LOCK: 'auth:admin-lock',
+  AUTH_RECOVERY_REQUEST: 'auth:recovery-request',
+  AUTH_RECOVERY_COMPLETE: 'auth:recovery-complete',
 
   USERS_LIST: 'users:list',
   USERS_SAVE_NAMES: 'users:save-names',
@@ -389,6 +495,14 @@ export const IPC = {
 
   REPORTS_GENERATE: 'reports:generate',
   REPORTS_OPEN_FOLDER: 'reports:open-folder',
+  REPORTS_SEARCH: 'reports:search',
+  REPORTS_RUN: 'reports:run',
+
+  BACKUP_STATUS: 'backup:status',
+  BACKUP_NOW: 'backup:now',
+  BACKUP_PICK_DIR: 'backup:pick-dir',
+  BACKUP_PICK_RESTORE: 'backup:pick-restore',
+  BACKUP_RESTORE: 'backup:restore',
 
   /** main -> renderer push events */
   EVT_MACHINE: 'evt:machine'

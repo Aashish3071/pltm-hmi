@@ -4,7 +4,12 @@ import { api } from '../api/client'
 import { critical } from '../components/MessageBox'
 import { Icon } from '../components/Icons'
 
-const DRIVER: Record<string, string> = { s7: 'Siemens S7 (Ethernet)', modbus: 'Modbus', simulator: 'Simulator' }
+const DRIVER: Record<string, string> = {
+  s7: 'Siemens S7 (Ethernet)',
+  controller: 'PantoCheck controller',
+  modbus: 'Modbus',
+  simulator: 'Simulator'
+}
 
 /** SETTINGS asks for the administrator's name and password, and shows the system details. */
 export default function AdminDialog({ onUnlocked, onClose }: { onUnlocked: () => void; onClose: () => void }): JSX.Element {

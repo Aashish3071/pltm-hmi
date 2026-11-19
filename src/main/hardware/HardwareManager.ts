@@ -10,6 +10,7 @@ import { settingsRepo } from '../db/repositories'
 import { log } from '../logger'
 import { DEFAULT_HARDWARE_CONFIG, validateHardwareConfig } from './config'
 import type { FaultKind, HardwareEvents, HardwareInterface } from './HardwareInterface'
+import { ControllerHardware } from './ControllerHardware'
 import { MockHardware } from './MockHardware'
 import { ModbusHardware } from './ModbusHardware'
 import { S7Hardware } from './S7Hardware'
@@ -139,6 +140,10 @@ export class HardwareHub extends EventEmitter implements HardwareInterface {
     return this.driver.getState()
   }
 
+  async refreshLimits(): Promise<void> {
+    await this.driver.refreshLimits?.()
+  }
+
   async forceFault(kind: FaultKind): Promise<void> {
     if (!this.driver.forceFault) throw new Error('Fault simulation is only available on the simulator')
     await this.driver.forceFault(kind)
@@ -164,6 +169,16 @@ export function buildDriver(config: HardwareConfig, options: { probeOnly?: boole
       return new S7Hardware(config.s7.connection, config.s7.map, options.probeOnly)
     case 'modbus':
       return new ModbusHardware(config.modbus.connection, config.modbus.map, options.probeOnly)
+    case 'controller':
+      return new ControllerHardware(
+        config.controller.connection,
+        () => ({
+          // Load capacity is set in kg; the controller trips in newtons.
+          loadCapacityN: Number(settingsRepo.get('load_capacity_kg') ?? 50) * 9.80665,
+          heightCapacityMm: Number(settingsRepo.get('height_capacity_mm') ?? 4000)
+        }),
+        options.probeOnly
+      )
     default:
       return new MockHardware(settingsRepo.getSpeeds())
   }

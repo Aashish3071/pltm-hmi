@@ -8,9 +8,9 @@ files:
   - package.json
 asarUnpack:
   - '**/*.node'
-# Dependencies are packaged but not rebuilt by electron-builder; see scripts/before-pack.cjs.
+# No native module needs rebuilding: SQLite is built into Electron and
+# serialport ships Node-API prebuilds for every platform.
 npmRebuild: false
-beforePack: scripts/before-pack.cjs
 afterPack: scripts/after-pack.cjs
 win:
   icon: resources/icon.ico

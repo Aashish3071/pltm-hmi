@@ -9,7 +9,8 @@ import {
   type Selection
 } from '@shared/types'
 import { computeResults } from '@shared/analysis'
-import { getHardware } from '../hardware/HardwareManager'
+import { disconnectedHint, disconnectedTitle } from '@shared/types'
+import { getHardware, loadHardwareConfig } from '../hardware/HardwareManager'
 import type { FaultKind } from '../hardware/HardwareInterface'
 import { modelsRepo, settingsRepo, testRunsRepo } from '../db/repositories'
 import { CommandError } from '../errors'
@@ -127,7 +128,10 @@ function finishCurrent(status: string, state?: PlcState): void {
 // ---------------------------------------------------------------------------
 
 function requireConnected(): void {
-  if (!getHardware().getState().connected) throw new CommandError(ErrorCode.HARDWARE_DISCONNECTED)
+  if (!getHardware().getState().connected) {
+    const config = loadHardwareConfig()
+    throw new CommandError(ErrorCode.HARDWARE_DISCONNECTED, `${disconnectedTitle(config)}. ${disconnectedHint(config)}`)
+  }
 }
 
 export async function start(): Promise<void> {
@@ -147,6 +151,11 @@ export async function start(): Promise<void> {
   }
   await getHardware().start(model)
   recording = true
+}
+
+/** A test is being recorded (START pressed, CYCLE COMPLETED not reached yet). */
+export function isRecording(): boolean {
+  return recording
 }
 
 export async function stop(): Promise<void> {

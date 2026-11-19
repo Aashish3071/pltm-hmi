@@ -3,14 +3,16 @@ import type { UserAccount } from '@shared/types'
 import { PRODUCT_NAME } from '@shared/brand'
 import { api } from '../api/client'
 import { Brand } from '../components/Header'
-import { critical } from '../components/MessageBox'
+import { critical, information } from '../components/MessageBox'
 import { Icon } from '../components/Icons'
+import RecoveryDialog from './RecoveryDialog'
 
 export default function LoginScreen({ onLogin, onExit }: { onLogin: (user: UserAccount) => void; onExit: () => void }): JSX.Element {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
   const [version, setVersion] = useState('')
+  const [recovering, setRecovering] = useState(false)
 
   useEffect(() => {
     void api.app.systemInfo().then((r) => r.ok && setVersion(r.data.appVersion))
@@ -74,7 +76,19 @@ export default function LoginScreen({ onLogin, onExit }: { onLogin: (user: UserA
             EXIT
           </button>
         </div>
+        <button className="link" style={{ alignSelf: 'center' }} onClick={() => setRecovering(true)} data-testid="forgot-admin">
+          Forgot ADMIN password?
+        </button>
       </div>
+      {recovering && (
+        <RecoveryDialog
+          onClose={() => setRecovering(false)}
+          onDone={() => {
+            setRecovering(false)
+            void information('Password reset', 'The ADMIN password has been changed. Log in with the new password.')
+          }}
+        />
+      )}
       <div className="login-foot">
         {PRODUCT_NAME} {version && `v${version}`}
       </div>

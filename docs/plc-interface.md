@@ -35,7 +35,15 @@ load × 100   position (mm)   status code   up time (s)   down time (s)   mode (
 | 31 | SERVO OFF | 91 | CYCLE COMPLETED |
 | 41 | HOMING NOT DONE | — | ETHERNET DISCONNECTED (no link) |
 
-## Modbus
+## PantoCheck controller (Arduino)
+
+For machines built without a PLC: our firmware in [`firmware/`](../firmware/README.md) runs the motor, load cell, switches and safety functions on an Arduino, and is a Modbus RTU slave (9600 8N1, slave 1). Choose **PantoCheck controller** under SETTINGS → SYSTEM and pick the COM port; the register layout is fixed (`firmware/pltm-controller/Registers.h`).
+
+- The app writes a heartbeat every 500 ms; the controller halts motion the app started if it stops for 2 s.
+- The app sends the speeds, the travel distance at START, and the load and height capacities (overload trip and soft travel limit).
+- E-stop, overload, over-travel switches and the drive alarm show as EMERGENCY PRESSED, OVERLOAD, OVER TRAVEL and SERVO ERROR.
+- MANUAL mode and jogging are on the remote pendant (hold UP and DOWN together for 5 s to switch mode).
+
 
 For PLCs that publish the same values in registers: Modbus RTU on a COM port (USB-to-RS485), RTU over a TCP gateway, or Modbus TCP. The register map (load, position, status code, times, mode, command coils, speed registers) is edited as JSON under **SETTINGS → SYSTEM**.
 

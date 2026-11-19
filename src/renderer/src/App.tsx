@@ -4,9 +4,10 @@ import { MessageBoxHost } from './components/MessageBox'
 import LoginScreen from './screens/LoginScreen'
 import SettingsScreen from './screens/SettingsScreen'
 import HomeScreen from './screens/HomeScreen'
+import HistoryScreen from './screens/HistoryScreen'
 import { connectMachine, useMachine } from './state/machine'
 
-type Screen = 'login' | 'main' | 'settings'
+type Screen = 'login' | 'main' | 'settings' | 'history'
 
 /** The 1366 × 768 touchscreen layout, scaled to the window. */
 function Stage({ children }: { children: ReactNode }): JSX.Element {
@@ -60,7 +61,15 @@ export default function App(): JSX.Element {
             onExit={quit}
           />
         )}
-        {screen === 'main' && <HomeScreen onSettings={() => setScreen('settings')} onLogout={() => void logout()} onClose={quit} />}
+        {screen === 'main' && (
+          <HomeScreen
+            onSettings={() => setScreen('settings')}
+            onHistory={() => setScreen('history')}
+            onLogout={() => void logout()}
+            onClose={quit}
+          />
+        )}
+        {screen === 'history' && <HistoryScreen onHome={() => setScreen('main')} />}
         {screen === 'settings' && <SettingsScreen onHome={() => void home()} onLogout={() => void logout()} onClose={quit} />}
       </div>
       <MessageBoxHost />

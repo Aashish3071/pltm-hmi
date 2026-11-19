@@ -43,11 +43,17 @@ export default function SystemDialog({ onClose }: { onClose: () => void }): JSX.
   }
 
   const s7 = config.s7.connection
-  const mb = config.modbus.connection
+  // The controller and a generic Modbus PLC share the connection fields.
+  const link = config.driver === 'controller' ? 'controller' : 'modbus'
+  const mb = config[link].connection
   const setS7 = (patch: Partial<S7Connection>): void =>
     setConfig({ ...config, s7: { ...config.s7, connection: { ...s7, ...patch } } })
   const setMb = (patch: Partial<ModbusConnection>): void =>
-    setConfig({ ...config, modbus: { ...config.modbus, connection: { ...mb, ...patch } } })
+    setConfig(
+      link === 'controller'
+        ? { ...config, controller: { connection: { ...mb, ...patch } } }
+        : { ...config, modbus: { ...config.modbus, connection: { ...mb, ...patch } } }
+    )
   const num = (v: string): number => Number(v)
 
   const assembled = (): HardwareConfig => ({
@@ -103,7 +109,8 @@ export default function SystemDialog({ onClose }: { onClose: () => void }): JSX.
                 data-testid="sys-driver"
               >
                 <option value="s7">Siemens S7 (Ethernet)</option>
-                <option value="modbus">Modbus (RTU / TCP)</option>
+                <option value="controller">PantoCheck controller (Modbus RTU)</option>
+                <option value="modbus">Other Modbus PLC (RTU / TCP)</option>
                 <option value="simulator">Simulator (no machine)</option>
               </select>
             </div>
@@ -131,7 +138,7 @@ export default function SystemDialog({ onClose }: { onClose: () => void }): JSX.
                 <textarea rows={10} value={s7Map} onChange={(e) => setS7Map(e.target.value)} spellCheck={false} />
               </>
             )}
-            {config.driver === 'modbus' && (
+            {(config.driver === 'modbus' || config.driver === 'controller') && (
               <>
                 <div className="grid">
                   <span>Transport</span>
@@ -198,8 +205,17 @@ export default function SystemDialog({ onClose }: { onClose: () => void }): JSX.
                   <input className="input" value={mb.pollIntervalMs} onChange={(e) => setMb({ pollIntervalMs: num(e.target.value) })} />
                   <input className="input" value={mb.timeoutMs} onChange={(e) => setMb({ timeoutMs: num(e.target.value) })} />
                 </div>
-                <p className="note">Register map — load, position, status code, times, mode; command coils; speed registers.</p>
-                <textarea rows={10} value={modbusMap} onChange={(e) => setModbusMap(e.target.value)} spellCheck={false} />
+                {config.driver === 'controller' ? (
+                  <p className="note">
+                    The controller firmware (firmware/pltm-controller) uses a fixed register layout. It stops motion if this
+                    app stops talking to it for 2 seconds.
+                  </p>
+                ) : (
+                  <p className="note">Register map — load, position, status code, times, mode; command coils; speed registers.</p>
+                )}
+                {config.driver === 'modbus' && (
+                  <textarea rows={10} value={modbusMap} onChange={(e) => setModbusMap(e.target.value)} spellCheck={false} />
+                )}
               </>
             )}
             {result && (
@@ -286,5 +302,5 @@ export default function SystemDialog({ onClose }: { onClose: () => void }): JSX.
 }
 
 function label(driver: HardwareDriver): string {
-  return driver === 's7' ? 'Siemens S7' : driver === 'modbus' ? 'Modbus' : 'Simulator'
+  return driver === 's7' ? 'Siemens S7' : driver === 'controller' ? 'PantoCheck controller' : driver === 'modbus' ? 'Modbus' : 'Simulator'
 }

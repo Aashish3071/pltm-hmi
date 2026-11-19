@@ -45,10 +45,12 @@ function Reading({ label, unit, value, testId }: { label: string; unit?: string;
 
 export default function HomeScreen({
   onSettings,
+  onHistory,
   onLogout,
   onClose
 }: {
   onSettings: () => void
+  onHistory: () => void
   onLogout: () => void
   onClose: () => void
 }): JSX.Element {
@@ -66,6 +68,7 @@ export default function HomeScreen({
   const [results, setResults] = useState<Shown>(ZERO)
   const [busy, setBusy] = useState(false)
   const [admin, setAdmin] = useState(false)
+  const [offlineText, setOfflineText] = useState('')
   const first = useRef(true)
 
   useEffect(() => {
@@ -77,6 +80,7 @@ export default function HomeScreen({
       }
     })
     void api.settings.get().then((r) => r.ok && setSpeeds(r.data.speeds))
+    void api.app.systemInfo().then((r) => r.ok && setOfflineText(r.data.disconnectedTitle))
   }, [])
 
   const model = useMemo(() => currentModel(), [models, selection])
@@ -145,6 +149,9 @@ export default function HomeScreen({
   return (
     <div className="screen">
       <Header title="Static contact force test">
+        <button className="header-btn" onClick={onHistory} data-testid="btn-history">
+          <Icon name="report" size={16} /> HISTORY
+        </button>
         <div className="who">
           <Icon name="user" size={18} /> <span data-testid="f-employee-head">{user?.displayName}</span>
         </div>
@@ -179,7 +186,7 @@ export default function HomeScreen({
           <div className={`status-main ${statusClass}`}>
             <div className="status-row">
               <div className="status-text" data-testid="status">
-                {statusText(state)}
+                {!state.connected && offlineText ? offlineText : statusText(state)}
               </div>
               <div className={`bell ${ALARM_CODES.includes(code) ? 'on' : ''}`} title="Alarm">
                 <Icon name="bell" />

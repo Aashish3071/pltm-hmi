@@ -30,6 +30,9 @@ export interface HardwareInterface extends EventEmitter {
 
   getState(): PlcState
 
+  /** Controller only: sends the overload and travel limits again (after the admin changes them). */
+  refreshLimits?(): Promise<void>
+
   /** Simulator only — faults that would otherwise come from the machine. */
   forceFault?(kind: FaultKind): Promise<void>
 

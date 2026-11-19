@@ -58,6 +58,20 @@ async function message(page: Page, timeout = 8000): Promise<string> {
   }
 }
 
+/** Waits until the element's text matches. */
+async function textMatches(page: Page, testId: string, pattern: RegExp, timeout = 5000): Promise<boolean> {
+  try {
+    await page.waitForFunction(
+      ([id, source]) => new RegExp(source).test(document.querySelector(`[data-testid=${id}]`)?.textContent?.trim() ?? ''),
+      [testId, pattern.source] as const,
+      { timeout }
+    )
+    return true
+  } catch {
+    return false
+  }
+}
+
 async function main(): Promise<void> {
   for (const dir of [shots, profile, documents]) {
     rmSync(dir, { recursive: true, force: true })
@@ -109,7 +123,7 @@ async function main(): Promise<void> {
   console.log('\nAdministrator sign-in')
   await page.getByTestId('btn-settings').click()
   await page.getByTestId('admin-password').waitFor()
-  check('system details shown', ((await page.getByTestId('admin-device').textContent()) ?? '').includes('192.168.0.1'))
+  check('system details shown', await textMatches(page, 'admin-device', /192\.168\.0\.1/))
   await shot(page, '03-admin')
   await page.getByTestId('admin-password').fill('123')
   await page.getByTestId('admin-ok').click()
@@ -224,6 +238,37 @@ async function main(): Promise<void> {
   check('cable pulled: ETHERNET DISCONNECTED', await waitStatus(page, 'ETHERNET DISCONNECTED', 5000), await status(page))
   check('reconnects by itself', await waitStatus(page, 'READY', 15000), await status(page))
 
+  console.log('\nHistory')
+  await page.getByTestId('btn-history').click()
+  await page.getByTestId('h-table').waitFor()
+  await page.getByTestId('h-partno').fill('PANTO-0042')
+  await page.getByTestId('h-search').click()
+  await page.waitForTimeout(500)
+  check('history finds the test by Part-No', (await page.getByTestId('h-row').count()) >= 1)
+  await page.getByTestId('h-row').first().click()
+  await page.getByTestId('h-graph').waitFor()
+  check('selected test shows its results', ((await page.getByTestId('h-avg').textContent()) ?? '').includes('/'))
+  await page.waitForTimeout(300)
+  await shot(page, '09-history')
+  await page.getByTestId('h-reprint').click()
+  check('reprint from history', (await message(page, 30000)).includes('PANTO-3600_PANTO-0042_'))
+  await page.getByTestId('h-home').click()
+  await page.getByTestId('status').waitFor()
+
+  console.log('\nData backup')
+  await page.getByTestId('btn-settings').click()
+  await page.getByTestId('admin-password').fill('1234')
+  await page.getByTestId('admin-ok').click()
+  await page.getByTestId('s-data').click()
+  await page.getByTestId('data-dialog').waitFor()
+  await page.getByTestId('backup-now').click()
+  await page.getByTestId('backup-table').waitFor({ timeout: 10000 })
+  check('BACK UP NOW lists a backup', (await page.locator('[data-testid=backup-table] tbody tr').count()) >= 1)
+  await shot(page, '10-data')
+  await page.locator('[data-testid=data-dialog] .actions button').click()
+  await page.getByTestId('s-home').click()
+  await page.getByTestId('status').waitFor()
+
   console.log('\nLogout and operators')
   await page.getByTestId('btn-logout').click()
   await page.getByTestId('login-username').fill('RAVI')
@@ -231,6 +276,15 @@ async function main(): Promise<void> {
   await page.getByTestId('login-button').click()
   await page.getByTestId('status').waitFor()
   check('renamed operator logs in with the new password', (await page.getByTestId('f-employee').inputValue()) === 'RAVI')
+  await page.getByTestId('btn-logout').click()
+  await page.getByTestId('forgot-admin').click()
+  await page.getByTestId('recovery-dialog').waitFor()
+  check('forgot ADMIN password shows a request code', await textMatches(page, 'recovery-request', /^[0-9A-Z]{4}-[0-9A-Z]{4}$/))
+  await page.getByTestId('recovery-response').fill('AAAAA-AAAAA')
+  await page.getByTestId('recovery-password').fill('abcd')
+  await page.getByTestId('recovery-confirm').fill('abcd')
+  await page.getByTestId('recovery-submit').click()
+  check('a wrong response code is refused', ((await page.getByTestId('recovery-error').textContent({ timeout: 5000 })) ?? '').length > 0)
 
   check('no renderer errors', errors.length === 0, errors.join(' | '))
   await app.close()

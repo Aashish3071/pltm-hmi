@@ -30,7 +30,10 @@ Each release is built and tested on Windows by GitHub Actions ([workflow](.githu
 - **Operation**: Employee, Model and Part-No with OK / CLEAR; START, STOP (becomes RESUME while paused), RESET, HOMING, REPORT, SETTINGS, LOGOUT, CLOSE.
 - **Settings** (administrator only): pantograph models (name and 9 load/height points; point 4 is the travel distance), user names, passwords, and up / down / jog speeds (UPLOAD sends them to the PLC).
 - **Reports**: one A4 test report per test as **Excel**, **PDF** and **JSON** (with every recorded sample), named after the model, part number and time.
-- **Machine connection**: **Siemens S7** over Ethernet, or **Modbus** RTU (USB-to-RS485 COM port), RTU over TCP or Modbus TCP, plus a built-in **simulator**. Reconnects by itself and shows ETHERNET DISCONNECTED meanwhile.
+- **History**: search past tests by Part-No, model and date, see each test's graph and results, and reprint its report.
+- **Backups** (SETTINGS → DATA): a daily automatic backup of users, models, settings and test records, to a folder of your choice (e.g. a USB stick); restore from any backup. A damaged database is detected at start-up and the newest good backup is offered.
+- **Forgotten ADMIN password**: *Forgot ADMIN password?* on the login screen shows a request code; support answers with a response code (`npm run recovery-code`) that lets the ADMIN password be reset.
+- **Machine connection**: **Siemens S7** over Ethernet, the **PantoCheck controller** (our Arduino firmware in [`firmware/`](firmware/README.md), Modbus RTU), any other **Modbus** PLC (RTU on a USB-to-RS485 COM port, RTU over TCP or Modbus TCP), plus a built-in **simulator**. Reconnects by itself and shows ETHERNET DISCONNECTED meanwhile.
 - **Users**: four accounts; passwords stored hashed.
 
 | Login | Settings |
@@ -44,6 +47,7 @@ Connection settings are under **SETTINGS → SYSTEM** (administrator only).
 | Machine | Hardware | Driver |
 | --- | --- | --- |
 | Siemens PLC | Ethernet cable to the PLC; PC on the PLC's network (e.g. `192.168.0.x`) | Siemens S7 — IP, rack, slot and data block addresses |
+| PantoCheck controller (Arduino) | USB, or a USB-to-RS485 adapter on the machine ([firmware/README.md](firmware/README.md)) | PantoCheck controller — COM port, 9600 baud, slave 1 |
 | Modbus PLC, USB-to-RS485 adapter | Adapter driver (FTDI, CH340 or CP210x) so it appears as a COM port | Modbus RTU, COM port |
 | Modbus PLC behind an Ethernet gateway | PC on the gateway's address range | Modbus RTU over TCP, or Modbus TCP |
 
@@ -56,6 +60,7 @@ Connection settings are under **SETTINGS → SYSTEM** (administrator only).
 | Users, models, settings, test history | `%APPDATA%\PantoCheck\pltm.db` |
 | Log file | `%APPDATA%\PantoCheck\logs\pltm.log` |
 | Reports (.xlsx, .pdf, .json) | `Documents\PantoCheck Reports` (changeable under SETTINGS → SYSTEM) |
+| Backups | `Documents\PantoCheck Backups` (changeable under SETTINGS → DATA) |
 
 ---
 
@@ -75,10 +80,19 @@ npm test             # all suites below
 npm run typecheck
 npm run test:machine # result maths; S7 driver vs a fake S7 PLC; Modbus RTU/TCP; simulator; reports
 npm run test:serial  # Modbus driver over a virtual COM port (needs socat: brew install socat)
+npm run test:firmware # controller firmware compiled for the PC, driven by the app's controller driver (needs g++ or clang++)
 npm run test:e2e     # clicks through the built app against a fake S7 PLC; screenshots in scripts/out/e2e
 ```
 
-The serial suite is skipped automatically where `socat` is not available (e.g. Windows).
+The serial and firmware suites are skipped automatically where `socat` or a C++ compiler is not available (e.g. Windows).
+
+### Admin password recovery codes
+
+Release builds need the `PLTM_RECOVERY_SECRET` repository secret (Settings → Secrets and variables → Actions); the release workflow refuses to build without it. To answer a customer's request code:
+
+```bash
+PLTM_RECOVERY_SECRET=... npm run recovery-code -- <request code> <machine ID>
+```
 
 ### Building the Windows installer
 

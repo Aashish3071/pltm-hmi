@@ -1,4 +1,13 @@
-import type { ModelConfig, Sample, SpeedSettings, TestResults, UserAccount } from '@shared/types'
+import type {
+  ModelConfig,
+  Sample,
+  SpeedSettings,
+  TestResults,
+  TestRunPage,
+  TestRunQuery,
+  TestRunSummary,
+  UserAccount
+} from '@shared/types'
 import { getDb } from './index'
 
 export interface UserRow {
@@ -155,7 +164,27 @@ export interface TestRunRow {
   upTimeSec: number | null
   downTimeSec: number | null
   resultStatus: string | null
+  reportPath: string | null
   results: TestResults | null
+}
+
+/** SQLite times are UTC ("YYYY-MM-DD HH:MM:SS"); the UI gets ISO strings. */
+function iso(value: string | null): string | null {
+  return value ? `${value.replace(' ', 'T')}Z` : null
+}
+
+export function toSummary(row: TestRunRow): TestRunSummary {
+  return {
+    id: row.id,
+    employeeName: row.employeeName,
+    modelName: row.modelName,
+    partNo: row.partNo,
+    startedAt: iso(row.startedAt) ?? '',
+    endedAt: iso(row.endedAt),
+    resultStatus: row.resultStatus,
+    reportPath: row.reportPath,
+    results: row.results
+  }
 }
 
 export const testRunsRepo = {
@@ -163,7 +192,7 @@ export const testRunsRepo = {
     return Number(
       getDb()
         .prepare(
-          "INSERT INTO test_runs (employee_user_id, model_id, part_no, started_at) VALUES (?, ?, ?, datetime('now','localtime'))"
+          "INSERT INTO test_runs (employee_user_id, model_id, part_no, started_at) VALUES (?, ?, ?, datetime('now'))"
         )
         .run(input.employeeUserId, input.modelId, input.partNo).lastInsertRowid
     )
@@ -196,7 +225,7 @@ export const testRunsRepo = {
   finish(runId: number, input: { upTimeSec: number; downTimeSec: number; status: string; results: TestResults }): void {
     getDb()
       .prepare(
-        "UPDATE test_runs SET ended_at = datetime('now','localtime'), up_cycle_sec = ?, down_cycle_sec = ?, result_status = ?, results_json = ?, max_load_n = ? WHERE id = ?"
+        "UPDATE test_runs SET ended_at = datetime('now'), up_cycle_sec = ?, down_cycle_sec = ?, result_status = ?, results_json = ?, max_load_n = ? WHERE id = ?"
       )
       .run(input.upTimeSec, input.downTimeSec, input.status, JSON.stringify(input.results), null, runId)
   },
@@ -205,11 +234,47 @@ export const testRunsRepo = {
     getDb().prepare('UPDATE test_runs SET report_path = ? WHERE id = ?').run(path, runId)
   },
 
+  /** Finished tests matching the query, newest first, with the total match count. */
+  search(query: TestRunQuery): TestRunPage {
+    const where = ['r.ended_at IS NOT NULL']
+    const params: (string | number)[] = []
+    const partNo = String(query.partNo ?? '').trim()
+    if (partNo) {
+      where.push("r.part_no LIKE ? ESCAPE '\\'")
+      params.push(`%${partNo.replace(/[\\%_]/g, (c) => `\\${c}`)}%`)
+    }
+    if (query.modelId) {
+      where.push('r.model_id = ?')
+      params.push(Number(query.modelId))
+    }
+    // started_at is stored in UTC; filter on the operator's local calendar date.
+    if (query.fromDate) {
+      where.push("date(r.started_at, 'localtime') >= ?")
+      params.push(String(query.fromDate))
+    }
+    if (query.toDate) {
+      where.push("date(r.started_at, 'localtime') <= ?")
+      params.push(String(query.toDate))
+    }
+    if (query.resultStatus) {
+      where.push('r.result_status = ?')
+      params.push(String(query.resultStatus))
+    }
+    const filter = where.join(' AND ')
+    const limit = Math.min(Math.max(Number(query.limit) || 100, 1), 500)
+    const offset = Math.max(Number(query.offset) || 0, 0)
+    const total = (getDb().prepare(`SELECT COUNT(*) AS n FROM test_runs r WHERE ${filter}`).get(...params) as { n: number }).n
+    const ids = getDb()
+      .prepare(`SELECT r.id FROM test_runs r WHERE ${filter} ORDER BY r.id DESC LIMIT ? OFFSET ?`)
+      .all(...params, limit, offset) as { id: number }[]
+    return { runs: ids.map((r) => toSummary(testRunsRepo.get(r.id)!)), total }
+  },
+
   get(runId: number): TestRunRow | undefined {
     const row = getDb()
       .prepare(
         `SELECT r.id, u.display_name AS employee_name, r.model_id, m.name AS model_name, r.part_no,
-                r.started_at, r.ended_at, r.up_cycle_sec, r.down_cycle_sec, r.result_status, r.results_json
+                r.started_at, r.ended_at, r.up_cycle_sec, r.down_cycle_sec, r.result_status, r.results_json, r.report_path
          FROM test_runs r
          LEFT JOIN users u ON u.id = r.employee_user_id
          LEFT JOIN models m ON m.id = r.model_id
@@ -228,6 +293,7 @@ export const testRunsRepo = {
       upTimeSec: (row.up_cycle_sec as number) ?? null,
       downTimeSec: (row.down_cycle_sec as number) ?? null,
       resultStatus: (row.result_status as string) ?? null,
+      reportPath: (row.report_path as string) ?? null,
       results: row.results_json ? (JSON.parse(row.results_json as string) as TestResults) : null
     }
   }

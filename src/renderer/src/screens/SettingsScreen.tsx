@@ -8,6 +8,7 @@ import { critical, information } from '../components/MessageBox'
 import { PlotView } from '../components/Plot'
 import { currentModel, refreshModelsAndSelection, useMachine } from '../state/machine'
 import SystemDialog from './SystemDialog'
+import DataDialog from './DataDialog'
 
 export default function SettingsScreen({
   onHome,
@@ -30,6 +31,7 @@ export default function SettingsScreen({
   const [names, setNames] = useState<string[]>(['', '', '', ''])
   const [speeds, setSpeeds] = useState({ up: '', down: '', jog: '' })
   const [system, setSystem] = useState(false)
+  const [data, setData] = useState(false)
 
   const model = useMemo(() => currentModel(), [models, selection])
 
@@ -114,6 +116,9 @@ export default function SettingsScreen({
   return (
     <div className="screen">
       <Header title="Settings">
+        <button className="header-btn" onClick={() => setData(true)} data-testid="s-data">
+          <Icon name="report" size={16} /> DATA
+        </button>
         <button className="header-btn" onClick={() => setSystem(true)} data-testid="s-system">
           <Icon name="plug" size={16} /> SYSTEM
         </button>
@@ -266,6 +271,7 @@ export default function SettingsScreen({
         </div>
       </div>
       {system && <SystemDialog onClose={() => setSystem(false)} />}
+      {data && <DataDialog onClose={() => setData(false)} />}
     </div>
   )
 }

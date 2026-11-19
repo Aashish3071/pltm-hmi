@@ -147,7 +147,7 @@ export function getMachineSettings(): MachineSettings {
   }
 }
 
-export function setMachineSettings(input: MachineSettings): MachineSettings {
+export async function setMachineSettings(input: MachineSettings): Promise<MachineSettings> {
   const machineId = String(input?.machineId ?? '').trim()
   const name = String(input?.company?.name ?? '').trim()
   const a1 = String(input?.company?.addressLine1 ?? '').trim()
@@ -170,6 +170,8 @@ export function setMachineSettings(input: MachineSettings): MachineSettings {
   settingsRepo.set('company_address_1', a1)
   settingsRepo.set('company_address_2', a2)
   settingsRepo.set('measurement_speed_text', speedText)
+  // The controller enforces these limits itself.
+  await getHardware().refreshLimits().catch((error) => log.warn('Could not send limits to the controller', error))
   return getMachineSettings()
 }
 
@@ -206,9 +208,12 @@ export async function setHardwareConfig(input: unknown): Promise<HardwareConfig>
  */
 export async function testHardwareConfig(input: unknown): Promise<ConnectionTestResult> {
   const config = parseHardwareConfig(input)
-  if (config.driver === 'simulator') throw invalid('Choose Siemens S7 or Modbus to test a connection.')
+  if (config.driver === 'simulator') throw invalid('Choose a machine connection to test.')
   const hub = getHardware()
-  const releasedLive = hub.driverKind === config.driver
+  // A COM port cannot be opened twice: the controller and Modbus drivers may share one.
+  const serialKinds = ['controller', 'modbus']
+  const releasedLive =
+    hub.driverKind === config.driver || (serialKinds.includes(hub.driverKind) && serialKinds.includes(config.driver))
   if (releasedLive) await hub.disconnect()
   const probe = buildDriver(config, { probeOnly: true })
   try {
@@ -223,8 +228,8 @@ export async function testHardwareConfig(input: unknown): Promise<ConnectionTest
 
 export function describeDevice(config: HardwareConfig): string {
   if (config.driver === 's7') return `${config.s7.connection.host}:${config.s7.connection.port}`
-  if (config.driver === 'modbus') {
-    const c = config.modbus.connection
+  if (config.driver === 'modbus' || config.driver === 'controller') {
+    const c = config[config.driver].connection
     return c.transport === 'rtu-serial' ? c.serialPath : `${c.host}:${c.port}`
   }
   return 'SIMULATOR'

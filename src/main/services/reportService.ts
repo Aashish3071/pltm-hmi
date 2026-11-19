@@ -4,9 +4,16 @@ import { app, BrowserWindow } from 'electron'
 import ExcelJS from 'exceljs'
 import pkg from '../../../package.json'
 import { PRODUCT_NAME } from '@shared/brand'
-import { ErrorCode, type ModelConfig, type ReportResult, type Sample, type TestResults } from '@shared/types'
+import {
+  ErrorCode,
+  type ModelConfig,
+  type ReportResult,
+  type Sample,
+  type TestResults,
+  type TestRunDetail
+} from '@shared/types'
 import { computeResults, formatResult, sortedPoints } from '@shared/analysis'
-import { modelsRepo, settingsRepo, testRunsRepo } from '../db/repositories'
+import { modelsRepo, settingsRepo, testRunsRepo, toSummary } from '../db/repositories'
 import { CommandError } from '../errors'
 import { log } from '../logger'
 import { currentUser } from './authService'
@@ -31,18 +38,21 @@ export interface ReportData {
   samples: Sample[]
 }
 
-function collect(): ReportData {
-  const test = currentTest()
+/** The current test (n), or a stored one for a reprint from the history. */
+function collect(runId?: number): ReportData & { runId: number } {
+  const test = runId ? storedTest(runId) : currentTest()
   if (!test) throw new CommandError(ErrorCode.NO_TEST)
   const run = testRunsRepo.get(test.runId)
   const model = run?.modelId ? (modelsRepo.get(run.modelId) ?? null) : null
   const machine = getMachineSettings()
   const speeds = settingsRepo.getSpeeds()
+  const reprint = Boolean(runId)
   return {
-    date: new Date(),
+    runId: test.runId,
+    date: reprint && run?.endedAt ? new Date(`${run.endedAt.replace(' ', 'T')}Z`) : new Date(),
     modelName: run?.modelName ?? model?.name ?? '',
     partNo: run?.partNo || '#####',
-    employee: currentUser()?.displayName ?? run?.employeeName ?? '',
+    employee: (reprint ? run?.employeeName : currentUser()?.displayName) ?? run?.employeeName ?? '',
     speedText: machine.measurementSpeedText || `${trimNumber(speeds.up)} mm/s`,
     machineId: machine.machineId,
     company: [machine.company.name, machine.company.addressLine1, machine.company.addressLine2].filter(Boolean),
@@ -58,9 +68,27 @@ export function reportBaseName(data: Pick<ReportData, 'modelName' | 'partNo' | '
   return `${clean(data.modelName)}_${clean(data.partNo)}_${stamp(data.date)}`
 }
 
+function storedTest(runId: number): { runId: number; samples: Sample[] } | null {
+  const run = testRunsRepo.get(runId)
+  if (!run) return null
+  const samples = testRunsRepo.samples(runId)
+  return samples.length ? { runId, samples } : null
+}
+
+/** A stored test with its model, for redrawing the graph in the history. */
+export function testDetail(runId: number): TestRunDetail {
+  const run = testRunsRepo.get(runId)
+  if (!run) throw new CommandError(ErrorCode.NO_TEST, 'That test no longer exists.')
+  return {
+    run: toSummary(run),
+    model: run.modelId ? (modelsRepo.get(run.modelId) ?? null) : null,
+    samples: testRunsRepo.samples(runId)
+  }
+}
+
 /** REPORT: an Excel workbook, a PDF and the data as JSON. */
-export async function generateReport(chartPngDataUrl?: string): Promise<ReportResult> {
-  const data = collect()
+export async function generateReport(chartPngDataUrl?: string, runId?: number): Promise<ReportResult> {
+  const data = collect(runId)
   const dir = reportDir()
   mkdirSync(dir, { recursive: true })
   const base = join(dir, reportBaseName(data))
@@ -73,8 +101,7 @@ export async function generateReport(chartPngDataUrl?: string): Promise<ReportRe
   await writeExcel(data, png, excelPath)
   await writePdf(data, png, pdfPath)
   writeFileSync(jsonPath, JSON.stringify(reportJson(data), null, 2))
-  const test = currentTest()
-  if (test) testRunsRepo.setReportPath(test.runId, excelPath)
+  testRunsRepo.setReportPath(data.runId, excelPath)
   log.info(`Report written: ${base}.{xlsx,pdf,json}`)
   return { excelPath, pdfPath, jsonPath }
 }

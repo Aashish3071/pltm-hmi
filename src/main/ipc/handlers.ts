@@ -1,7 +1,9 @@
+import { existsSync } from 'fs'
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import pkg from '../../../package.json'
-import { SerialPort } from 'serialport'
 import {
+  disconnectedHint,
+  disconnectedTitle,
   ErrorCode,
   ERROR_MESSAGES,
   IPC,
@@ -10,16 +12,20 @@ import {
   type ModelDraft,
   type SerialPortInfo,
   type SpeedSettings,
-  type SystemInfo
+  type SystemInfo,
+  type TestRunQuery
 } from '@shared/types'
 import { getHardware, loadHardwareConfig } from '../hardware/HardwareManager'
 import type { FaultKind } from '../hardware/HardwareInterface'
-import { modelsRepo, settingsRepo, usersRepo } from '../db/repositories'
+import { modelsRepo, settingsRepo, testRunsRepo, usersRepo } from '../db/repositories'
+import { listSerialPorts } from '../hardware/serialPorts'
 import { CommandError } from '../errors'
 import { log, logPath } from '../logger'
 import * as auth from '../services/authService'
 import * as config from '../services/configService'
-import { generateReport, reportDir } from '../services/reportService'
+import * as backup from '../services/backupService'
+import * as recovery from '../services/recoveryService'
+import { generateReport, reportDir, testDetail } from '../services/reportService'
 import * as tests from '../services/testService'
 
 type Access = 'public' | 'user' | 'admin'
@@ -66,7 +72,9 @@ export function registerIpcHandlers(): void {
       loadCapacityKg: machine.loadCapacityKg,
       heightCapacityMm: machine.heightCapacityMm,
       appVersion: pkg.version,
-      driver: getHardware().driverKind
+      driver: getHardware().driverKind,
+      disconnectedTitle: disconnectedTitle(hw),
+      disconnectedHint: disconnectedHint(hw)
     }
   })
 
@@ -84,6 +92,11 @@ export function registerIpcHandlers(): void {
   })
   handle(IPC.AUTH_ADMIN_CHECK, 'user', (input: { username: string; password: string }) => {
     if (!auth.unlockAdmin(input?.username, input?.password)) throw new CommandError(ErrorCode.INVALID_CREDENTIALS)
+    return true
+  })
+  handle(IPC.AUTH_RECOVERY_REQUEST, 'public', () => recovery.getRecoveryRequest())
+  handle(IPC.AUTH_RECOVERY_COMPLETE, 'public', (input: { response: string; password: string }) => {
+    recovery.completeRecovery(String(input?.response ?? ''), String(input?.password ?? ''))
     return true
   })
   handle(IPC.AUTH_ADMIN_LOCK, 'user', () => {
@@ -127,18 +140,7 @@ export function registerIpcHandlers(): void {
   handle(IPC.HARDWARE_GET_CONFIG, 'admin', () => config.getHardwareConfig())
   handle(IPC.HARDWARE_SET_CONFIG, 'admin', (input: unknown) => config.setHardwareConfig(input))
   handle(IPC.HARDWARE_TEST_CONNECTION, 'admin', (input: unknown) => config.testHardwareConfig(input))
-  handle(IPC.HARDWARE_LIST_PORTS, 'admin', async (): Promise<SerialPortInfo[]> => {
-    const ports = await SerialPort.list()
-    return ports
-      .map((p) => ({
-        path: p.path,
-        manufacturer: p.manufacturer,
-        vendorId: p.vendorId,
-        productId: p.productId,
-        chip: chipName(p.vendorId)
-      }))
-      .sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true }))
-  })
+  handle(IPC.HARDWARE_LIST_PORTS, 'admin', (): Promise<SerialPortInfo[]> => listSerialPorts())
   handle(IPC.HARDWARE_RECONNECT, 'user', async () => {
     const connected = await getHardware().tryConnect()
     if (!connected) throw new CommandError(ErrorCode.CONNECTION_FAILED, getHardware().connectError || undefined)
@@ -163,28 +165,67 @@ export function registerIpcHandlers(): void {
     await tests.forceFault(kind)
   })
 
-  // --- reports --------------------------------------------------------------
-  handle(IPC.REPORTS_GENERATE, 'user', (input: { chartPng?: string }) => generateReport(input?.chartPng))
-  handle(IPC.REPORTS_OPEN_FOLDER, 'user', async () => {
-    await shell.openPath(reportDir())
+  // --- reports and history ----------------------------------------------------
+  handle(IPC.REPORTS_GENERATE, 'user', (input: { chartPng?: string; runId?: number }) =>
+    generateReport(input?.chartPng, input?.runId ? Number(input.runId) : undefined)
+  )
+  handle(IPC.REPORTS_SEARCH, 'user', (query: TestRunQuery) => testRunsRepo.search(query ?? {}))
+  handle(IPC.REPORTS_RUN, 'user', (runId: number) => testDetail(Number(runId)))
+  handle(IPC.REPORTS_OPEN_FOLDER, 'user', async (runId?: number) => {
+    const run = runId ? testRunsRepo.get(Number(runId)) : undefined
+    if (run?.reportPath && existsSync(run.reportPath)) shell.showItemInFolder(run.reportPath)
+    else await shell.openPath(reportDir())
+    return true
+  })
+
+  // --- backup ---------------------------------------------------------------
+  handle(IPC.BACKUP_STATUS, 'admin', () => backup.getBackupStatus())
+  handle(IPC.BACKUP_NOW, 'admin', () => {
+    backup.createBackup('manual')
+    return backup.getBackupStatus()
+  })
+  handle(IPC.BACKUP_PICK_DIR, 'admin', async () => {
+    const path = await pickFolder('Choose where backups are saved', backup.backupDir())
+    if (path) {
+      backup.setBackupDir(path)
+      // Start the new location with a fresh copy.
+      backup.createBackup('manual')
+    }
+    return backup.getBackupStatus()
+  })
+  handle(IPC.BACKUP_PICK_RESTORE, 'admin', async () => {
+    const path = await pickFolder('Choose the backup folder to restore (PantoCheck-backup-…)', backup.backupDir())
+    return path ? backup.inspectBackup(path) : null
+  })
+  handle(IPC.BACKUP_RESTORE, 'admin', async (folder: string) => {
+    if (tests.isRecording()) {
+      throw new CommandError(ErrorCode.INVALID_INPUT, 'Finish or RESET the running test before restoring.')
+    }
+    backup.inspectBackup(String(folder ?? ''))
+    const hardware = getHardware()
+    hardware.stopSupervision()
+    await hardware.disconnect()
+    backup.stopAutoBackup()
+    tests.shutdown()
+    backup.restoreBackup(String(folder))
+    // Restart so every service reloads settings, models and the test history.
+    setTimeout(() => {
+      app.relaunch()
+      app.exit(0)
+    }, 300)
     return true
   })
 }
 
-/** USB-to-serial adapter families by USB vendor id. */
-function chipName(vendorId: string | undefined): string | undefined {
-  switch ((vendorId ?? '').toLowerCase()) {
-    case '0403':
-      return 'FTDI'
-    case '1a86':
-      return 'CH340'
-    case '10c4':
-      return 'CP210x'
-    case '067b':
-      return 'Prolific'
-    default:
-      return undefined
+async function pickFolder(title: string, defaultPath: string): Promise<string | null> {
+  const window = BrowserWindow.getFocusedWindow()
+  const options = {
+    title,
+    defaultPath,
+    properties: ['openDirectory', 'createDirectory'] as ('openDirectory' | 'createDirectory')[]
   }
+  const result = window ? await dialog.showOpenDialog(window, options) : await dialog.showOpenDialog(options)
+  return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0]
 }
 
 /** Fan events out to every renderer window. */
